@@ -1,0 +1,1 @@
+ALTER TABLE "purchase_permissions" ADD COLUMN "approved_variants" jsonb DEFAULT '{}'::jsonb NOT NULL;

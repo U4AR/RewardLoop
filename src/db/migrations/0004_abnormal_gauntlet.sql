@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "goals_one_active_per_user_uq" ON "goals" USING btree ("user_id") WHERE "goals"."status" = 'ACTIVE';

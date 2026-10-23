@@ -1,0 +1,54 @@
+{
+  "name": "rewardloop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20.9"
+  },
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "worker": "tsx src/worker/index.ts",
+    "db:local": "node scripts/start-local-db.mjs",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "tsx scripts/migrate.ts",
+    "auth:migrate": "tsx scripts/migrate-auth.ts",
+    "demo:bootstrap": "tsx scripts/bootstrap-demo-user.ts",
+    "db:seed": "tsx scripts/seed.ts",
+    "provider:channel3:smoke": "tsx scripts/channel3-smoke.ts",
+    "provider:local-ai:smoke": "vitest run --config vitest.smoke.config.ts --no-isolate --maxWorkers=1 --no-file-parallelism",
+    "test": "vitest run --no-isolate --maxWorkers=1 --no-file-parallelism",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "0.131.0",
+    "@onkernel/sdk": "0.120.0",
+    "better-auth": "1.7.7",
+    "drizzle-orm": "0.45.3",
+    "next": "16.4.0",
+    "pg": "8.23.1",
+    "pg-boss": "12.37.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.1",
+    "@types/pg": "8.15.5",
+    "@types/react": "19.2.7",
+    "@types/react-dom": "19.2.3",
+    "drizzle-kit": "0.31.11",
+    "embedded-postgres": "^18.4.0-beta.17",
+    "tsx": "4.23.15",
+    "typescript": "5.9.3",
+    "vitest": "5.0.3"
+  },
+  "allowScripts": {
+    "@embedded-postgres/windows-x64@18.4.0-beta.17": true,
+    "esbuild@0.18.20": true,
+    "esbuild@0.25.12": true,
+    "esbuild@0.28.2": true
+  }
+}

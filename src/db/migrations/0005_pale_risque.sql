@@ -1,0 +1,2 @@
+ALTER TABLE "purchase_intents" ADD COLUMN "store_session_id" uuid;--> statement-breakpoint
+ALTER TABLE "purchase_intents" ADD CONSTRAINT "purchase_intents_store_session_id_mock_store_sessions_id_fk" FOREIGN KEY ("store_session_id") REFERENCES "public"."mock_store_sessions"("id") ON DELETE no action ON UPDATE no action;
