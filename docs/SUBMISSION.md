@@ -16,7 +16,7 @@ The [official overview](https://paypalaihackathon.devpost.com/) and rules requir
 
 The [Devpost submission guide](https://help.devpost.com/article/126-know-your-submission-steps) describes a typical project name, tagline, optional 3:2 thumbnail and gallery, project story, built-with tags, video link, repository and testing details, and final terms acceptance. The actual PayPal form has now been inspected and a draft saved; its remaining Additional Info step asks for personal submitter type, country and eligibility assertions, subjective ratings, a technical-requirement answer, and a demo URL. The owner must answer personal declarations. The official judging criteria weight technological implementation, design, impact, innovation, and presentation equally. A final video should show the actual end-to-end run and the payment and AI evidence, with clear fixture labels where relevant.
 
-**Release gap as of this update:** A real PayPal Sandbox call and payment has not been observed. A provider-backed AI decision is under local implementation and test, without an observed Sandbox-authorizing path. The repository exists but source publication is pending in this status snapshot; the judge route has not been independently reproduced, the YouTube video remains unlisted, and Devpost is a draft rather than a final entry. The local controlled-store flow can be shown honestly as a work in progress, but the final entry should demonstrate actual provider-backed results or candidly disclose any remaining limits.
+**Release gap as of this update:** A real PayPal Sandbox call and payment has not been observed. Real local Qwen inference was observed for a fixture demonstration, but no Anthropic decision or Sandbox-authorizing path has been verified. The public repository contains source and an MIT license; the judge route has not been independently reproduced, the YouTube video remains unlisted, and Devpost is a draft rather than a final entry. The local controlled-store flow can be shown honestly as a work in progress, but the final entry should demonstrate actual provider-backed results or candidly disclose any remaining limits.
 
 ## Devpost form map
 
@@ -27,7 +27,7 @@ The [Devpost submission guide](https://help.devpost.com/article/126-know-your-su
 | Project story | Adapt the inspiration, current build, implementation, challenges, and limitations sections below. Keep each provider's verified result and unverified path separate. |
 | Built with | Next.js, TypeScript, PostgreSQL, and the actually used provider APIs. Add PayPal Sandbox and an AI model only after a recorded successful run. Channel3 search is already verified. |
 | Demo / Try it out | Insert either a hosted judge URL or a public repository with verified, complete setup and testing instructions. Localhost alone is not reachable by judges. The current public repo and local run instructions have not yet been independently reproduced by a judge. |
-| Code repository | [Temporary public GitHub repository](https://github.com/U4AR/RewardLoop), entered in the Devpost draft; verify its source tree and visible MIT license after upload. |
+| Code repository | [Temporary public GitHub repository](https://github.com/U4AR/RewardLoop), entered in the Devpost draft; all 126 local source paths and the MIT license were fetched from its public branch. |
 | Video | A 99-second prototype video is entered in the Devpost draft but still unlisted for owner review. Its link is held privately. It explicitly labels the simulated checkout. A final entry requires public visibility. |
 | Team and declarations | Owner supplies real submitter type, location, eligibility, ownership, and acceptance of terms. Do not infer or auto-complete personal declarations. |
 
@@ -58,7 +58,7 @@ The prototype uses a Next.js TypeScript web app, PostgreSQL with migrations, a s
 - **PayPal:** Sandbox-only saved-wallet and fresh buyer-approval Checkout paths are implemented, with local mocked tests and no live-mode REST route. New Sandbox permissions require a fresh buyer approval until Vault capability is proven. Both provider-backed paths require a bound synthetic cart and model-reviewed evidence. Genuine Sandbox credentials, buyer approval, and capture are not yet configured or observed.
 - **AI evidence:** An Anthropic adapter, fixture reviewer, and optional loopback-only local Qwen reviewer are present. Three genuine local model calls were observed on 23 October with `local_llama` provenance: substantive notes were accepted, and incomplete/unsupported-duration notes were withheld. The local model may support only a fixture-payment demonstration; the Sandbox gate still requires a separately verified Anthropic decision.
 - **Channel3:** Real server-side search and product detail have succeeded. The checkout early-access email was sent on 23 October after explicit owner approval; no reply has been observed and checkout is not enabled.
-- **Kernel:** The app now has a queued two-session profile save/delete/restore cart action and a separate controlled store, plus a standalone diagnostic probe. Mocked tests pass, but no Kernel cloud browser or saved profile has run yet.
+- **Kernel:** The app now has a queued two-session profile save/delete/restore cart action and a separate controlled store, plus a standalone diagnostic probe. A restricted project key is in ignored local configuration and the dashboard showed $4.99 free credits with $0 due; a live Kernel browser/profile run still requires a separate reachable HTTPS store. Free-plan entitlement for the second project remains unverified.
 - **Render:** The owner created a free Hobby account with no services or payment card and a $0.00 credit balance. A draft Blueprint describes a web process, worker, and database; it has not been synced and no hosted service has been created.
 
 ## Challenges, resolutions, and learning
@@ -75,7 +75,7 @@ Finish the PayPal Developer Sandbox account and Vault capability probe, then ver
 
 | Required destination | Observed state |
 | --- | --- |
-| Public open-source repository and license | [Temporary public GitHub repository](https://github.com/U4AR/RewardLoop) created; source upload and remote license verification pending in this snapshot. |
+| Public open-source repository and license | [Temporary public GitHub repository](https://github.com/U4AR/RewardLoop) contains source and MIT license; all 126 local source paths were fetched from the public branch. |
 | Working hosted demo or reproducible judge route | Local commands in [README.md](../README.md); no hosted judge URL and no verified external judge route. |
 | Public YouTube video under three minutes | Prototype walkthrough uploaded and playable at 1:39, but visibility is **unlisted** pending review. The review link is not in this public repository. It is a fixture demo and cannot prove real PayPal or AI calls. |
 | Devpost project/submission | RewardLoop draft exists with 3/5 steps saved. Remaining personal/technical questions and finalization are incomplete; no submission confirmation. The private management URL is held outside this public repository. |
