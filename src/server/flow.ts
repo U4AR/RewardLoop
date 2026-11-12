@@ -26,7 +26,7 @@ export const permissionInput = z.object({
   expectedSeller: z.string().min(1),
   expectedVariants: z.record(z.string(), z.string()),
   expectedMode: z.enum(["fixture", "paypal_sandbox_fresh"]),
-  expectedReviewerProvider: z.enum(["anthropic", "google_vertex", "local_llama", "fixture"]),
+  expectedReviewerProvider: z.enum(["anthropic", "google_vertex", "google_gemini", "local_llama", "fixture"]),
   expectedReviewerModel: z.string().min(1),
   ownerConfirmed: z.literal(true),
 });

@@ -152,7 +152,7 @@ function providerValue(mode: AppState["providerMode"], key: string) {
 }
 
 function reviewerName(provider: string, model: string) {
-  if (provider === "google_vertex") return `Gemini (${model})`;
+  if (provider === "google_vertex" || provider === "google_gemini") return "RewardLoop AI";
   if (provider === "local_llama") return `${model.replace(/-Q\d.*$/, "").replace(/-/g, " ")}, running on this computer`;
   if (provider === "anthropic") return `Claude (${model})`;
   if (provider === "fixture") return "the offline test rule";
@@ -312,7 +312,7 @@ export function RewardLoopApp() {
   const plannedSandbox = providerValue(state?.providerMode || null, "payment") === "paypal_sandbox";
   const plannedReviewer = providerValue(state?.providerMode || null, "evidence");
   const plannedModel = providerValue(state?.providerMode || null, "evidenceModel");
-  const reviewerReady = ["anthropic", "google_vertex", "local_llama", "fixture"].includes(plannedReviewer) && (!plannedSandbox || plannedReviewer !== "fixture");
+  const reviewerReady = ["anthropic", "google_vertex", "google_gemini", "local_llama", "fixture"].includes(plannedReviewer) && (!plannedSandbox || plannedReviewer !== "fixture");
   const reviewer = reviewerName(textField(permission, "reviewProvider") || plannedReviewer, textField(permission, "reviewModel") || plannedModel);
   const receiptProvider = textField(purchase, "receiptProvider").toLowerCase();
   const pendingReview = evidence.some((item) => textField(item, "status").toUpperCase() === "PENDING");

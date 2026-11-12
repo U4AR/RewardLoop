@@ -13,6 +13,8 @@ export const cloudDecisionSchema = z.object({
 }).strict();
 
 type VertexConfig = {
+  GOOGLE_AI_BACKEND?: "vertex" | "gemini_api";
+  GEMINI_API_KEY?: string;
   VERTEX_PROJECT_ID?: string;
   VERTEX_MODEL: string;
   VERTEX_LOCATION: string;
@@ -50,6 +52,14 @@ async function accessToken(config: VertexConfig): Promise<string> {
 
 /** POSTs to Vertex. If Google answers 401, the cached token is dropped and the request is sent once more with a fresh one. */
 async function vertexFetch(config: VertexConfig, endpoint: string, body: string): Promise<Response> {
+  if (config.GOOGLE_AI_BACKEND === "gemini_api") {
+    if (!config.GEMINI_API_KEY) throw new Error("Gemini API key is not configured");
+    // Explicit selection: never fall back to a paid Vertex identity on quota or auth errors.
+    return fetch(`https://generativelanguage.googleapis.com/v1beta/models/${config.VERTEX_MODEL}:generateContent`, {
+      method: "POST", cache: "no-store", redirect: "error", signal: AbortSignal.timeout(45000),
+      headers: { "x-goog-api-key": config.GEMINI_API_KEY, "content-type": "application/json" }, body,
+    });
+  }
   const send = async () => fetch(endpoint, {
     method: "POST", cache: "no-store", redirect: "error", signal: AbortSignal.timeout(45000),
     headers: { Authorization: `Bearer ${await accessToken(config)}`, "x-goog-user-project": config.VERTEX_PROJECT_ID!, "content-type": "application/json" },
@@ -76,7 +86,7 @@ export function validatedCloudDecision(candidate: unknown, finishReason: string)
 export type ReviewMedia = { kind: "photo" | "voice"; mimeType: string; base64: string };
 
 export async function reviewWithVertex(input: { rubric: string; notes: string; media?: ReviewMedia }, config: VertexConfig) {
-  if (!config.VERTEX_PROJECT_ID) throw new Error("Google Cloud project is not configured");
+  if (config.GOOGLE_AI_BACKEND === "gemini_api" ? !config.GEMINI_API_KEY : !config.VERTEX_PROJECT_ID) throw new Error("Hosted Gemini is not configured");
   const host = config.VERTEX_LOCATION === "global" ? "aiplatform.googleapis.com" : `${config.VERTEX_LOCATION}-aiplatform.googleapis.com`;
   const endpoint = `https://${host}/v1/projects/${config.VERTEX_PROJECT_ID}/locations/${config.VERTEX_LOCATION}/publishers/google/models/${config.VERTEX_MODEL}:generateContent`;
   const response = await vertexFetch(config, endpoint, JSON.stringify({
@@ -97,10 +107,8 @@ export async function reviewWithVertex(input: { rubric: string; notes: string; m
       },
   }));
   if (!response.ok) {
-    const error = await response.json().catch(() => null);
-    const status = typeof error?.error?.status === "string" ? error.error.status : "UNKNOWN";
-    const reason = typeof error?.error?.message === "string" ? error.error.message.slice(0, 500) : "No detail supplied";
-    throw new Error(`Hosted evidence reviewer returned HTTP ${response.status} (${status}): ${reason}`);
+    // Do not echo upstream messages: authentication errors can include credential material.
+    throw new Error(`Hosted evidence reviewer returned HTTP ${response.status}`);
   }
   const raw = await response.text();
   if (raw.length > 40000) throw new Error("Hosted reviewer response exceeded the limit");
@@ -109,7 +117,7 @@ export async function reviewWithVertex(input: { rubric: string; notes: string; m
   const text = candidate?.content?.parts?.filter((part: { thought?: boolean; text?: string }) => !part.thought).map((part: { text?: string }) => part.text ?? "").join("");
   let judgment: unknown;
   try { judgment = JSON.parse(text || "null"); } catch { judgment = null; }
-  return { ...validatedCloudDecision(judgment, candidate?.finishReason), provider: "google_vertex" as const, model: config.VERTEX_MODEL,
+  return { ...validatedCloudDecision(judgment, candidate?.finishReason), provider: config.GOOGLE_AI_BACKEND === "gemini_api" ? "google_gemini" as const : "google_vertex" as const, model: config.VERTEX_MODEL,
     inputTokens: payload.usageMetadata?.promptTokenCount as number | undefined,
     outputTokens: payload.usageMetadata?.candidatesTokenCount as number | undefined };
 }
@@ -121,7 +129,7 @@ export async function reviewWithVertex(input: { rubric: string; notes: string; m
 export async function generateVertexJson(config: VertexConfig, request: {
   system: string; input: unknown; schema: Record<string, unknown>; maxOutputTokens?: number;
 }): Promise<unknown> {
-  if (!config.VERTEX_PROJECT_ID) throw new Error("Google Cloud project is not configured");
+  if (config.GOOGLE_AI_BACKEND === "gemini_api" ? !config.GEMINI_API_KEY : !config.VERTEX_PROJECT_ID) throw new Error("Hosted Gemini is not configured");
   const host = config.VERTEX_LOCATION === "global" ? "aiplatform.googleapis.com" : `${config.VERTEX_LOCATION}-aiplatform.googleapis.com`;
   const endpoint = `https://${host}/v1/projects/${config.VERTEX_PROJECT_ID}/locations/${config.VERTEX_LOCATION}/publishers/google/models/${config.VERTEX_MODEL}:generateContent`;
   const response = await vertexFetch(config, endpoint, JSON.stringify({

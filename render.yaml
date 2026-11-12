@@ -45,16 +45,11 @@ services:
         value: sandbox
       - key: PAYPAL_API_BASE_URL
         value: https://api-m.sandbox.paypal.com
-      - key: VERTEX_PROJECT_ID
-        value: gen-lang-client-0907473631
+      - key: GOOGLE_AI_BACKEND
+        value: gemini_api
+      - key: GEMINI_API_KEY
+        sync: false
       - key: VERTEX_MODEL
-        value: gemini-3.8-flash
-      - key: VERTEX_LOCATION
-        value: global
-      - key: GOOGLE_AUTH_MODE
-        value: adc
-      - key: GOOGLE_APPLICATION_CREDENTIALS
-        value: /etc/secrets/google-credentials.json
-# Supply google-credentials.json via Render secret files or workload identity.
+        value: gemini-3.5-flash-lite
 # Existing durable PostgreSQL is required; no database is created here.
 # Optional legacy sandbox blueprint: render.sandbox.yaml.

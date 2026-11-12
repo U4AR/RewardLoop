@@ -13,7 +13,7 @@ const decisionSchema = z.object({
 });
 
 export type EvidenceDecision = z.infer<typeof decisionSchema> & {
-  provider: "anthropic" | "google_vertex" | "local_llama" | "fixture" | "unavailable";
+  provider: "anthropic" | "google_vertex" | "google_gemini" | "local_llama" | "fixture" | "unavailable";
   model: string;
   inputTokens?: number;
   outputTokens?: number;
@@ -21,7 +21,9 @@ export type EvidenceDecision = z.infer<typeof decisionSchema> & {
 
 export async function reviewEvidence(input: { rubric: string; notes: string }, policy: ReviewerPolicy): Promise<EvidenceDecision> {
   const config = getConfig();
-  if (policy.provider === "google_vertex" && config.VERTEX_PROJECT_ID && config.VERTEX_MODEL === policy.model) {
+  const googleProvider = config.GOOGLE_AI_BACKEND === "gemini_api" ? "google_gemini" : "google_vertex";
+  const googleReady = config.GOOGLE_AI_BACKEND === "gemini_api" ? Boolean(config.GEMINI_API_KEY) : Boolean(config.VERTEX_PROJECT_ID);
+  if (policy.provider === googleProvider && googleReady && config.VERTEX_MODEL === policy.model) {
     return reviewWithVertex(input, config);
   }
   if (policy.provider === "local_llama" && config.LOCAL_EVIDENCE_URL && config.LOCAL_EVIDENCE_MODEL === policy.model) {

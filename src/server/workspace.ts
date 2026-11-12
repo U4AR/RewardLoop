@@ -59,7 +59,7 @@ export async function workspaceState(userId: string) {
   ]);
   const config = getConfig();
   return { plans: plans.rows, checkins: checkins.rows, stats: { totalDays: stats.rows[0].total_days }, services: {
-    catalog: Boolean(config.CHANNEL3_API_KEY), reviewer: Boolean(config.VERTEX_PROJECT_ID),
+    catalog: Boolean(config.CHANNEL3_API_KEY), reviewer: config.GOOGLE_AI_BACKEND === "gemini_api" ? Boolean(config.GEMINI_API_KEY) : Boolean(config.VERTEX_PROJECT_ID),
     browser: Boolean(config.KERNEL_API_KEY), reviewerName: "RewardLoop AI", currency: "USD",
   } };
 }
@@ -71,7 +71,7 @@ export async function createRewardPlan(userId: string, raw: unknown) {
   const availableDays = (Date.parse(`${input.deadline}T12:00:00Z`) - Date.parse(`${today}T12:00:00Z`)) / 86400000 + 1;
   if (availableDays < input.requiredDays || availableDays > 366) throw new DomainError("INVALID_DEADLINE", "Choose a deadline with enough days to complete your goal.");
   const config = getConfig();
-  if (!config.VERTEX_PROJECT_ID) throw new DomainError("REVIEWER_UNAVAILABLE", "The hosted progress reviewer is not configured yet.", 503);
+  if (config.GOOGLE_AI_BACKEND === "gemini_api" ? !config.GEMINI_API_KEY : !config.VERTEX_PROJECT_ID) throw new DomainError("REVIEWER_UNAVAILABLE", "The hosted progress reviewer is not configured yet.", 503);
   const product = await catalog().getProduct(input.productId);
   if (!product) throw new DomainError("PRODUCT_UNAVAILABLE", "This product is no longer available. Search for another reward.", 409);
   const offer = product.offers.find(item => item.sourceMerchantDomain === input.merchant);

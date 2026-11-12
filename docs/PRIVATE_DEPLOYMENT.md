@@ -6,7 +6,7 @@ Keep `ALLOW_LOCAL_SIGNUP=false` and `ALLOW_FIXTURE_PROVIDERS=false`. Set `DEMO_A
 
 Use the exact HTTPS service origin for both `APP_ORIGIN` and `BETTER_AUTH_URL`. Supply the existing database/encryption configuration and Channel3, Kernel and PayPal Sandbox credentials privately. The app only supports Sandbox payments; retailer order submission stays disabled. Browser callback requests still pass through the access gate.
 
-For Vertex AI, use a dedicated Google service identity restricted to inference in the configured project, supplied through ADC/Render's secret-file store. Do not copy a developer's gcloud profile. A private secret file can be referenced with `GOOGLE_APPLICATION_CREDENTIALS=/etc/secrets/google-credentials.json`.
+This deployment selects `GOOGLE_AI_BACKEND=gemini_api`, a private `GEMINI_API_KEY` from the owner's non-billed AI Studio project, and `VERTEX_MODEL=gemini-3.5-flash-lite` (the model variable name is retained for compatibility). No Google service-account file is needed. Explicit API mode never falls back to paid Vertex credentials when a key, quota or request fails. Keep the key server-side; never prefix it with `NEXT_PUBLIC_`. Free-tier inputs/responses can be used to improve Google's products, so use fictional evidence and delivery data; the About page discloses the provider and processing. See [Google's terms](https://ai.google.dev/gemini-api/terms) and [pricing](https://ai.google.dev/gemini-api/docs/pricing).
 
 Provision an account with `npm run demo:bootstrap` using a synthetic `DEMO_USER_EMAIL` ending in `@rewardloop.test` and a strong private `DEMO_USER_PASSWORD`. This does not open public registration or overwrite an existing account password.
 

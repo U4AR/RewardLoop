@@ -22,6 +22,8 @@ const envSchema = z.object({
   KERNEL_API_KEY: z.string().optional(),
   ANTHROPIC_API_KEY: z.string().optional(),
   EVIDENCE_MODEL: z.string().optional(),
+  GOOGLE_AI_BACKEND: z.enum(["vertex", "gemini_api"]).default("vertex"),
+  GEMINI_API_KEY: z.string().min(20).optional(),
   VERTEX_PROJECT_ID: z.string().regex(/^[a-z][a-z0-9-]{4,61}[a-z0-9]$/).optional(),
   VERTEX_MODEL: z.string().regex(/^[a-zA-Z0-9._-]+$/).default("gemini-3.8-flash"),
   VERTEX_LOCATION: z.string().regex(/^[a-z0-9-]+$/).default("global"),
