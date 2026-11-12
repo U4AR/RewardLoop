@@ -121,6 +121,12 @@ describe("deterministic purchase gate", () => {
     expectDenied(lookalike, "LIVE_PAYMENT_FORBIDDEN");
   });
 
+  it("fails closed on a payment mode not recognized by the hackathon gate", () => {
+    const input = approvedPurchase();
+    input.permission.executionMode = "paypal_live" as GateInput["permission"]["executionMode"];
+    expectDenied(input, "PAYMENT_NOT_READY");
+  });
+
   it("requires USD even if the permission and quote both name another currency", () => {
     const input = approvedPurchase();
     input.permission.currency = "EUR";

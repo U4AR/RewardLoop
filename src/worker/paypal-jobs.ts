@@ -5,6 +5,7 @@ import { pgDate } from "../db/date";
 import { localDateAt } from "../domain/clock";
 import { PayPalSandboxClient, type SandboxOrderAssessment } from "../integrations/paypal-sandbox";
 import { getActiveWalletForUser } from "../server/paypal-wallet";
+import { countQualifyingDays } from "../server/qualification";
 import type { Pool, PoolClient } from "pg";
 
 const REPLAY_WINDOW_MS = 5 * 60 * 60 * 1000; // Below PayPal Orders' documented 6-hour key retention.
@@ -112,12 +113,12 @@ async function claimFinancialOperation(op: Operation, expectedState: "PREPARED" 
     const context = await db.query(
       `SELECT i.state AS intent_state,i.capture_id,i.order_id AS intent_order_id,
               i.quote_id,i.selected_sku,i.store_session_id,i.lease_owner,i.lease_until,i.lease_fence,
-              p.status AS permission_status,p.payload_hash,p.goal_version,p.rubric_version,
+              p.status AS permission_status,p.payload_hash,p.goal_version,p.rubric_version,p.review_provider,p.review_model,
               p.earliest_date,p.latest_date,p.unattended_sandbox_approved,p.execution_mode,
               p.payment_connection_id,p.primary_sku,p.alternative_skus,p.approved_variants,
               p.seller AS approved_seller,p.quantity AS approved_quantity,p.currency AS approved_currency,
               p.synthetic_destination_id,p.total_cap_minor,
-              g.status AS goal_status,g.goal_version AS current_goal_version,
+              g.id AS goal_id,g.status AS goal_status,g.goal_version AS current_goal_version,
               g.rubric_version AS current_rubric_version,g.timezone,g.required_days,g.start_date,g.end_date_exclusive,
               q.status AS quote_status,q.expires_at,q.total_minor,q.currency,q.sku,q.variant,q.seller,
               q.quantity,q.destination_id,
@@ -186,16 +187,13 @@ async function claimFinancialOperation(op: Operation, expectedState: "PREPARED" 
       businessDate >= pgDate(row.earliest_date) && businessDate < pgDate(row.latest_date),
     );
     if (!structuralMatch) { await db.query("COMMIT"); return false; }
-    const count = await db.query(
-      `SELECT COUNT(*)::int AS n FROM daily_qualifications dq
-       JOIN evidence_submissions e ON e.id = dq.evidence_id
-       WHERE dq.goal_id = (SELECT goal_id FROM purchase_intents WHERE id = $1)
-         AND dq.goal_version = $2 AND dq.rubric_version = $3
-         AND dq.local_date >= $4 AND dq.local_date < $5
-         AND e.review_provider = 'anthropic' AND e.status = 'ACCEPTED'`,
-      [op.intent_id, row.goal_version, row.rubric_version, row.start_date, row.end_date_exclusive],
-    );
-    if ((count.rows[0]?.n ?? 0) < row.required_days) { await db.query("COMMIT"); return false; }
+    const acceptedDays = await countQualifyingDays(db,
+      { id: row.goal_id, goal_version: row.current_goal_version, rubric_version: row.current_rubric_version,
+        start_date: row.start_date, end_date_exclusive: row.end_date_exclusive },
+      { user_id: op.user_id, status: row.permission_status, execution_mode: row.execution_mode,
+        goal_version: row.goal_version, rubric_version: row.rubric_version,
+        review_provider: row.review_provider, review_model: row.review_model });
+    if (acceptedDays < row.required_days) { await db.query("COMMIT"); return false; }
     const changed = await db.query(
       "UPDATE payment_operations SET state = 'SENT', updated_at = now() WHERE id = $1 AND state = $2 RETURNING id",
       [op.id, expectedState],

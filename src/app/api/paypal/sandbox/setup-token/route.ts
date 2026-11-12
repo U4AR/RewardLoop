@@ -9,7 +9,9 @@ export async function POST(request: Request): Promise<Response> {
     requireWalletOrigin(request);
     const user = await getUser();
     if (!user) return Response.json({ error: "AUTH_REQUIRED" }, { status: 401 });
-    return Response.json(await createSetupSession(user.id), { headers: { "Cache-Control": "no-store" } });
+    const body = await request.json().catch(() => ({}));
+    const returnTo = body?.returnTo === "/" ? "/" : "/sandbox";
+    return Response.json(await createSetupSession(user.id, returnTo), { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     return walletErrorResponse(error);
   }

@@ -63,7 +63,7 @@ function walletErrorText(error: unknown) {
   }
 }
 
-export function SandboxWallet() {
+export function SandboxWallet({ onConnectionChange, workspace = false }: { onConnectionChange?: () => void; workspace?: boolean } = {}) {
   const [wallet, setWallet] = useState<WalletStatus | null>(null);
   const [sdk, setSdk] = useState<SdkToken | null>(null);
   const [loading, setLoading] = useState(true);
@@ -80,6 +80,7 @@ export function SandboxWallet() {
     try {
       const result = await walletRequest<WalletStatus>("/api/paypal/sandbox/connection", "GET");
       setWallet(result);
+      onConnectionChange?.();
       setStatusUnavailable(false);
       if (result.status === "CONNECTED") setOutcomeUnknown(false);
       setError("");
@@ -89,7 +90,7 @@ export function SandboxWallet() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [onConnectionChange]);
 
   useEffect(() => { void refresh(); }, [refresh]);
 
@@ -172,7 +173,7 @@ export function SandboxWallet() {
     try {
       await window.paypalWallet.Buttons({
         createVaultSetupToken: async () => {
-          const setup = await walletRequest<SetupToken>("/api/paypal/sandbox/setup-token", "POST");
+          const setup = await walletRequest<SetupToken>("/api/paypal/sandbox/setup-token", "POST", workspace ? { returnTo: "/" } : undefined);
           if (!setup.setupToken || !setup.state) throw new WalletUiError("WALLET_SETUP_INVALID_OR_CONSUMED");
           setupRef.current = setup;
           return setup.setupToken;
@@ -205,9 +206,9 @@ export function SandboxWallet() {
 
   return (
     <section className="card section-card wallet-card" aria-labelledby="wallet-title">
-      <div className="card-heading"><div><span className="section-index">PAYMENT SETUP · SANDBOX ONLY</span><h2 id="wallet-title">Save a test wallet</h2></div><span className="fixture-chip">PayPal Sandbox</span></div>
-      <p className="muted">A test buyer approves a saved PayPal wallet here. This does not buy a reward or grant purchase permission. Live payments are disabled.</p>
-      <div className="wallet-status" role="status"><span className={`wallet-status-dot ${wallet?.status === "CONNECTED" ? "connected" : ""}`} /><strong>{loading ? "Checking connection…" : statusUnavailable ? "Connection status unavailable" : wallet?.status === "CONNECTED" ? "Sandbox wallet saved" : wallet?.configured ? "Sandbox wallet not connected" : "Sandbox setup not configured"}</strong><span>{statusUnavailable ? "Refresh the status before starting another approval." : wallet?.status === "CONNECTED" ? "Saved locally after Sandbox approval. Payment still requires the separate purchase gate." : wallet?.configured ? "Merchant settings detected; Vault access is not yet verified." : "Developer account access is still pending."}</span></div>
+      <div className="card-heading"><div>{!workspace && <span className="section-index">PAYMENT SETUP · SANDBOX ONLY</span>}<h2 id="wallet-title">{workspace ? "Connect PayPal" : "Save a test wallet"}</h2></div><span className="fixture-chip">{workspace ? "Test mode" : "PayPal Sandbox"}</span></div>
+      <p className="muted">{workspace ? "Approve in PayPal so RewardLoop can pay for this reward, only within the permission you set below." : "A test buyer approves a saved PayPal wallet here. This does not buy a reward or grant purchase permission. Live payments are disabled."}</p>
+      <div className="wallet-status" role="status"><span className={`wallet-status-dot ${wallet?.status === "CONNECTED" ? "connected" : ""}`} /><strong>{loading ? "Checking connection…" : statusUnavailable ? "Connection status unavailable" : wallet?.status === "CONNECTED" ? (workspace ? "PayPal connected" : "Sandbox wallet saved") : wallet?.configured ? (workspace ? "PayPal not connected" : "Sandbox wallet not connected") : "Sandbox setup not configured"}</strong><span>{statusUnavailable ? "Refresh the status before starting another approval." : wallet?.status === "CONNECTED" ? (workspace ? "Payment still needs your purchase permission below." : "Saved locally after Sandbox approval. Payment still requires the separate purchase gate.") : wallet?.configured ? (workspace ? "" : "Merchant settings detected; Vault access is not yet verified.") : "Developer account access is still pending."}</span></div>
       {notice && <p className="wallet-notice" role="status">{notice}</p>}
       {error && <p className="inline-error" role="alert">{error}</p>}
       {statusUnavailable ? (
@@ -218,7 +219,7 @@ export function SandboxWallet() {
         <div className="wallet-recovery"><p>Approval may have reached PayPal. Check the local connection, then retry only this same approval if it is still missing.</p><div className="wallet-recovery-actions"><button type="button" className="button button-secondary" disabled={loading || action !== null} onClick={() => void refresh()}>Check connection</button>{setupRef.current && <button type="button" className="button button-secondary" disabled={loading || action !== null} onClick={() => void retryApproval()}>{action === "retrying" ? "Retrying same approval…" : "Retry same approval"}</button>}</div></div>
       ) : wallet?.configured ? (
         <>
-          {!sdk && <button type="button" className="button button-secondary" disabled={action !== null || outcomeUnknown} onClick={() => void startSetup()}>{action === "starting" ? "Preparing approval…" : "Connect PayPal Sandbox wallet"}</button>}
+          {!sdk && <button type="button" className="button button-secondary" disabled={action !== null || outcomeUnknown} onClick={() => void startSetup()}>{action === "starting" ? "Preparing approval…" : workspace ? "Connect PayPal" : "Connect PayPal (Sandbox)"}</button>}
           {sdk && <><div id="sandbox-wallet-buttons" className="paypal-buttons" aria-label="PayPal Sandbox wallet approval" />{sdkUrl && <Script key={sdk.idToken} src={sdkUrl} strategy="afterInteractive" data-namespace="paypalWallet" data-user-id-token={sdk.idToken} onReady={() => void renderButtons()} onError={() => setError("The official PayPal Sandbox script could not load.")} />}</>}
         </>
       ) : (

@@ -127,7 +127,7 @@ export async function createSdkToken(): Promise<{ clientId: string; merchantId: 
   };
 }
 
-export async function createSetupSession(userId: string): Promise<{
+export async function createSetupSession(userId: string, returnTo: "/" | "/sandbox" = "/sandbox"): Promise<{
   setupToken: string;
   state: string;
   expiresAt: string;
@@ -146,8 +146,8 @@ export async function createSetupSession(userId: string): Promise<{
   const appOrigin = new URL(config.APP_ORIGIN).origin;
   const setup = await client.createVaultSetupToken({
     requestId: randomUUID(),
-    returnUrl: `${appOrigin}/?paypal_wallet=approved`,
-    cancelUrl: `${appOrigin}/?paypal_wallet=canceled`,
+    returnUrl: `${appOrigin}${returnTo}?paypal_wallet=approved`,
+    cancelUrl: `${appOrigin}${returnTo}?paypal_wallet=canceled`,
   });
   if (setup.status !== "PAYER_ACTION_REQUIRED") {
     throw new WalletError(502, "PAYPAL_SETUP_ACTION_NOT_REQUIRED");

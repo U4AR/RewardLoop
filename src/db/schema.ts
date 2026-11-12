@@ -1,7 +1,32 @@
 import { sql } from "drizzle-orm";
-import { boolean, date, index, integer, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { boolean, check, date, index, integer, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 
 const createdAt = () => timestamp("created_at", { withTimezone: true }).notNull().defaultNow();
+
+export const rewardPlans = pgTable("reward_plans", {
+  id: uuid("id").primaryKey().defaultRandom(), userId: text("user_id").notNull(),
+  productId: text("product_id").notNull(), product: jsonb("product").notNull(),
+  offerUrl: text("offer_url").notNull(), merchant: text("merchant").notNull(),
+  goalTitle: text("goal_title").notNull(), rubric: text("rubric").notNull(),
+  requiredDays: integer("required_days").notNull(), timezone: text("timezone").notNull(),
+  startDate: date("start_date").notNull(), deadline: date("deadline").notNull(),
+  budgetMinor: integer("budget_minor").notNull(), reviewModel: text("review_model").notNull(),
+  status: text("status").notNull().default("active"), retailerCheck: jsonb("retailer_check"),
+  checkStartedAt: timestamp("check_started_at", { withTimezone: true }),
+  checkoutOpenedAt: timestamp("checkout_opened_at", { withTimezone: true }), createdAt: createdAt(),
+}, t => [index("reward_plans_owner").on(t.userId, t.createdAt),
+  check("reward_plan_days", sql`${t.requiredDays} BETWEEN 1 AND 60`),
+  check("reward_plan_budget", sql`${t.budgetMinor} > 0`),
+  check("reward_plan_status", sql`${t.status} IN ('active','archived')`)]);
+
+export const rewardCheckins = pgTable("reward_checkins", {
+  id: uuid("id").primaryKey().defaultRandom(), planId: uuid("plan_id").notNull().references(() => rewardPlans.id),
+  userId: text("user_id").notNull(), businessDate: date("business_date").notNull(), notes: text("notes").notNull(),
+  contentHash: text("content_hash").notNull(), status: text("status").notNull().default("pending"),
+  review: jsonb("review"), createdAt: createdAt(),
+}, t => [uniqueIndex("reward_checkins_content").on(t.planId, t.contentHash),
+  index("reward_checkins_owner_date").on(t.userId, t.createdAt),
+  check("reward_checkin_status", sql`${t.status} IN ('pending','accepted','rejected','needs_review','error')`)]);
 
 export const demoProducts = pgTable("demo_products", {
   sku: text("sku").primaryKey(),
@@ -84,6 +109,8 @@ export const permissions = pgTable("purchase_permissions", {
   latestDate: date("latest_date").notNull(),
   unattendedSandboxApproved: boolean("unattended_sandbox_approved").notNull().default(false),
   executionMode: text("execution_mode").notNull().default("fixture"),
+  reviewProvider: text("review_provider"),
+  reviewModel: text("review_model"),
   payloadHash: text("payload_hash").notNull(),
   status: text("status").notNull().default("ACTIVE"),
   approvedAt: timestamp("approved_at", { withTimezone: true }).notNull().defaultNow(),

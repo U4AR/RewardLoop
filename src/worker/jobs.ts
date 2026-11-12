@@ -6,6 +6,8 @@ import { getConfig } from "../config";
 import { localDateAt } from "../domain/clock";
 import { evaluatePurchaseGate } from "../domain/purchase-gate";
 import { reviewEvidence } from "../integrations/evidence-review";
+import { reviewerPolicyFromPermission } from "../domain/reviewer-policy";
+import { countQualifyingDays, recordQualifyingDay } from "../server/qualification";
 import { commitPayPal, capturePayPal, reconcilePayPal } from "./paypal-jobs";
 import { prepareKernelCart } from "../server/kernel-cart";
 import { KernelCartError } from "../integrations/kernel-cart";
@@ -72,29 +74,44 @@ export async function runOneJob(): Promise<boolean> {
 
 async function processReview(evidenceId: string, userId: string) {
   const record = await getPool().query(
-    `SELECT e.*,g.rubric,g.goal_version AS current_goal_version,g.rubric_version AS current_rubric_version,g.status AS goal_status
+    `SELECT e.*,g.rubric,g.goal_version AS current_goal_version,g.rubric_version AS current_rubric_version,g.status AS goal_status,
+       p.review_provider AS pinned_review_provider,p.review_model AS pinned_review_model,
+       p.execution_mode AS pinned_execution_mode,p.status AS permission_status,
+       p.goal_version AS permission_goal_version,p.rubric_version AS permission_rubric_version
      FROM evidence_submissions e JOIN goals g ON g.id = e.goal_id
+     LEFT JOIN purchase_permissions p ON p.goal_id = e.goal_id AND p.user_id = e.user_id
      WHERE e.id = $1 AND e.user_id = $2 AND g.user_id = $2`, [evidenceId, userId],
   );
   const evidence = record.rows[0];
   if (!evidence || evidence.status !== "PENDING") return;
-  if (evidence.goal_version !== evidence.current_goal_version || evidence.rubric_version !== evidence.current_rubric_version || evidence.goal_status !== "ACTIVE") {
+  const reviewer = reviewerPolicyFromPermission({
+    review_provider: evidence.pinned_review_provider, review_model: evidence.pinned_review_model,
+    execution_mode: evidence.pinned_execution_mode,
+  });
+  if (evidence.goal_version !== evidence.current_goal_version || evidence.rubric_version !== evidence.current_rubric_version || evidence.goal_status !== "ACTIVE" ||
+      evidence.permission_status !== "ACTIVE" || evidence.permission_goal_version !== evidence.goal_version ||
+      evidence.permission_rubric_version !== evidence.rubric_version || !reviewer) {
     await getPool().query("UPDATE evidence_submissions SET status = 'STALE', reviewed_at = now() WHERE id = $1 AND status = 'PENDING'", [evidenceId]);
     return;
   }
   let review;
-  try { review = await reviewEvidence({ rubric: evidence.rubric, notes: evidence.notes }); }
+  try { review = await reviewEvidence({ rubric: evidence.rubric, notes: evidence.notes }, reviewer); }
   catch (error) {
     review = { decision: "needs_review" as const, observations: [], missingRequirements: ["Review provider was unavailable"], reason: "Review could not be completed.", confidence: 0, provider: "unavailable" as const, model: "none" };
     console.error("Evidence review provider failed", error instanceof Error ? error.message : "unknown");
   }
-  const status = review.decision === "accepted" ? "ACCEPTED" : review.decision === "rejected" ? "REJECTED" : "NEEDS_REVIEW";
+  const status = review.decision === "accepted" && review.provider === reviewer.provider && review.model === reviewer.model
+    ? "ACCEPTED" : review.decision === "rejected" ? "REJECTED" : "NEEDS_REVIEW";
   const client = await getPool().connect();
   try {
     await client.query("BEGIN");
     const current = await client.query("SELECT goal_version,rubric_version,status FROM goals WHERE id = $1 AND user_id = $2 FOR UPDATE", [evidence.goal_id, userId]);
     const goal = current.rows[0];
-    if (!goal || goal.status !== "ACTIVE" || goal.goal_version !== evidence.goal_version || goal.rubric_version !== evidence.rubric_version) {
+    const approved = await client.query("SELECT * FROM purchase_permissions WHERE goal_id = $1 AND user_id = $2 FOR SHARE", [evidence.goal_id, userId]);
+    const pinned = approved.rows[0] && reviewerPolicyFromPermission(approved.rows[0]);
+    if (!goal || goal.status !== "ACTIVE" || goal.goal_version !== evidence.goal_version || goal.rubric_version !== evidence.rubric_version ||
+        approved.rows[0]?.status !== "ACTIVE" || approved.rows[0]?.goal_version !== goal.goal_version ||
+        approved.rows[0]?.rubric_version !== goal.rubric_version || pinned?.provider !== reviewer.provider || pinned?.model !== reviewer.model) {
       await client.query("UPDATE evidence_submissions SET status = 'STALE', reviewed_at = now() WHERE id = $1 AND status = 'PENDING'", [evidenceId]);
       await client.query("COMMIT");
       return;
@@ -105,11 +122,10 @@ async function processReview(evidenceId: string, userId: string) {
       [evidenceId, status, review.provider, review.model, JSON.stringify({ decision: review.decision, observations: review.observations, missingRequirements: review.missingRequirements, reason: review.reason, confidence: review.confidence })],
     );
     if (updated.rowCount && status === "ACCEPTED") {
-      await client.query(
-        `INSERT INTO daily_qualifications (goal_id,goal_version,rubric_version,local_date,evidence_id)
-         VALUES ($1,$2,$3,$4,$5) ON CONFLICT (goal_id,goal_version,rubric_version,local_date) DO NOTHING`,
-        [evidence.goal_id, evidence.goal_version, evidence.rubric_version, evidence.business_date, evidenceId],
-      );
+      await recordQualifyingDay(client, {
+        goalId: evidence.goal_id, goalVersion: evidence.goal_version, rubricVersion: evidence.rubric_version,
+        businessDate: evidence.business_date, evidenceId,
+      }, reviewer);
       await client.query(
         "INSERT INTO outbox_jobs (kind,dedupe_key,payload) VALUES ('evaluate_goal',$1,$2) ON CONFLICT (dedupe_key) DO NOTHING",
         [`evaluate:${evidence.goal_id}:${evidence.goal_version}:${evidenceId}`, JSON.stringify({ goalId: evidence.goal_id, userId })],
@@ -134,16 +150,8 @@ async function processEvaluate(goalId: string, userId: string) {
     const i = await client.query("SELECT * FROM purchase_intents WHERE goal_id = $1 AND permission_id = $2 FOR UPDATE", [goalId, permission.id]);
     const intent = i.rows[0];
     if (!intent || !["ARMED", "QUALIFIED_WAITING_WINDOW"].includes(intent.state)) { await client.query("COMMIT"); return; }
-    const count = await client.query(
-      `SELECT COUNT(*)::int AS n FROM daily_qualifications dq
-       JOIN evidence_submissions e ON e.id = dq.evidence_id
-       WHERE dq.goal_id = $1 AND dq.goal_version = $2 AND dq.rubric_version = $3
-         AND dq.local_date >= $4 AND dq.local_date < $5
-         AND ($6::text IS NULL OR (e.review_provider = $6 AND e.status = 'ACCEPTED'))`,
-      [goalId, goal.goal_version, goal.rubric_version, goal.start_date, goal.end_date_exclusive,
-        permission.execution_mode === "fixture" ? null : "anthropic"],
-    );
-    if (count.rows[0].n < goal.required_days) { await client.query("COMMIT"); return; }
+    const acceptedDays = await countQualifyingDays(client, goal, permission);
+    if (acceptedDays < goal.required_days) { await client.query("COMMIT"); return; }
     const today = localDateAt(new Date(), goal.timezone);
     const earliest = pgDate(permission.earliest_date), latest = pgDate(permission.latest_date);
     const state = today < earliest ? "QUALIFIED_WAITING_WINDOW" : today >= latest ? "EXPIRED" :
@@ -152,7 +160,7 @@ async function processEvaluate(goalId: string, userId: string) {
     if (state === "QUEUED") {
       await client.query("INSERT INTO outbox_jobs (kind,dedupe_key,payload) VALUES ('execute_purchase',$1,$2) ON CONFLICT (dedupe_key) DO NOTHING", [`purchase:${intent.id}`, JSON.stringify({ intentId: intent.id, userId })]);
     }
-    await client.query("INSERT INTO audit_events (user_id,actor,type,details) VALUES ($1,'worker','GOAL_EVALUATED',$2)", [userId, JSON.stringify({ goalId, count: count.rows[0].n, state })]);
+    await client.query("INSERT INTO audit_events (user_id,actor,type,details) VALUES ($1,'worker','GOAL_EVALUATED',$2)", [userId, JSON.stringify({ goalId, count: acceptedDays, state })]);
     await client.query("COMMIT");
   } catch (error) { await client.query("ROLLBACK"); throw error; }
   finally { client.release(); }
@@ -212,20 +220,12 @@ async function processPurchase(intentId: string, userId: string) {
       [intentId, chosen.sku, chosen.variant, chosen.seller, chosen.price_minor, chosen.shipping_minor, chosen.tax_minor, totalMinor, chosen.inventory_version, intent.store_session_id ? storeCart.rows[0].destination_id : permission.synthetic_destination_id],
     );
     const lease = await client.query("UPDATE purchase_intents SET state = 'READY_TO_COMMIT', selected_sku = $2, quote_id = $3, lease_owner = 'worker', lease_fence = lease_fence + 1, lease_until = now() + interval '2 minutes', updated_at = now() WHERE id = $1 RETURNING lease_fence,lease_until", [intentId, chosen.sku, quote.rows[0].id]);
-    const count = await client.query(
-      `SELECT COUNT(*)::int AS n FROM daily_qualifications dq
-       JOIN evidence_submissions e ON e.id = dq.evidence_id
-       WHERE dq.goal_id = $1 AND dq.goal_version = $2 AND dq.rubric_version = $3
-         AND dq.local_date >= $4 AND dq.local_date < $5
-         AND ($6::text IS NULL OR (e.review_provider = $6 AND e.status = 'ACCEPTED'))`,
-      [goal.id, goal.goal_version, goal.rubric_version, goal.start_date, goal.end_date_exclusive,
-        permission.execution_mode === "fixture" ? null : "anthropic"],
-    );
+    const acceptedDays = await countQualifyingDays(client, goal, permission);
     const connection = permission.payment_connection_id ? await client.query("SELECT status,environment FROM payment_connections WHERE id = $1 AND user_id = $2", [permission.payment_connection_id, userId]) : { rows: [] };
     const businessDate = localDateAt(new Date(), goal.timezone);
     const gate = evaluatePurchaseGate({
       runtime: "hackathon", paymentHost: getConfig().PAYPAL_API_BASE_URL, actorUserId: userId, intentUserId: intent.user_id,
-      goal: { version: goal.goal_version, rubricVersion: goal.rubric_version, qualified: count.rows[0].n >= goal.required_days, status: goal.status },
+      goal: { version: goal.goal_version, rubricVersion: goal.rubric_version, qualified: acceptedDays >= goal.required_days, status: goal.status },
       permission: {
         userId: permission.user_id, goalVersion: permission.goal_version, rubricVersion: permission.rubric_version,
         status: permission.status, primarySku: permission.primary_sku, alternativeSkus: permission.alternative_skus,

@@ -3,7 +3,9 @@ import { z } from "zod";
 import { getPool } from "../db/client";
 import { pgDate } from "../db/date";
 import { assertDateRange, assertIanaTimezone, dateWithin, localDateAt } from "../domain/clock";
+import { reviewerPolicyFromPermission, selectReviewerPolicy } from "../domain/reviewer-policy";
 import { getConfig, providerMode } from "../config";
+import { countQualifyingDays } from "./qualification";
 
 export const goalInput = z.object({
   title: z.string().trim().min(4).max(120),
@@ -21,6 +23,12 @@ export const permissionInput = z.object({
   totalCapMinor: z.number().int().min(1).max(1_000_000),
   earliestDate: z.iso.date(),
   latestDate: z.iso.date(),
+  expectedSeller: z.string().min(1),
+  expectedVariants: z.record(z.string(), z.string()),
+  expectedMode: z.enum(["fixture", "paypal_sandbox_fresh"]),
+  expectedReviewerProvider: z.enum(["anthropic", "google_vertex", "local_llama", "fixture"]),
+  expectedReviewerModel: z.string().min(1),
+  ownerConfirmed: z.literal(true),
 });
 
 export const revokePermissionInput = z.object({ permissionId: z.uuid() });
@@ -91,6 +99,10 @@ export async function createPermission(userId: string, raw: unknown) {
     if (products.rowCount !== skuList.length) throw new DomainError("UNKNOWN_REWARD", "Choose an available demo reward");
     const primary = products.rows.find((row) => row.sku === input.primarySku);
     if (!primary || !products.rows.every((row) => row.seller === primary.seller)) throw new DomainError("SELLER_MISMATCH", "All approved alternatives must use the same synthetic seller");
+    if (input.expectedSeller !== primary.seller || Object.keys(input.expectedVariants).length !== skuList.length ||
+        !products.rows.every((row) => input.expectedVariants[row.sku] === row.variant)) {
+      throw new DomainError("PURCHASE_TERMS_CHANGED", "Reward details changed; review the purchase terms again", 409);
+    }
     const config = getConfig();
     const sandboxReady = Boolean(config.PAYPAL_SANDBOX_CLIENT_ID && config.PAYPAL_SANDBOX_CLIENT_SECRET && config.PAYPAL_SANDBOX_MERCHANT_ID);
     // A connected Vault token alone does not prove unattended merchant capability.
@@ -100,6 +112,14 @@ export async function createPermission(userId: string, raw: unknown) {
     if (executionMode === "fixture" && config.ALLOW_FIXTURE_PROVIDERS !== "true") {
       throw new DomainError("PAYPAL_SANDBOX_REQUIRED", "Configure a PayPal Sandbox merchant before approving this purchase", 409);
     }
+    const reviewer = selectReviewerPolicy(config);
+    if (!reviewer || (executionMode !== "fixture" && reviewer.provider === "fixture")) {
+      throw new DomainError("EVIDENCE_MODEL_REQUIRED", "Configure a real evidence model before approving a PayPal Sandbox purchase", 409);
+    }
+    if (input.expectedMode !== executionMode || input.expectedReviewerProvider !== reviewer.provider ||
+        input.expectedReviewerModel !== reviewer.model) {
+      throw new DomainError("PURCHASE_TERMS_CHANGED", "Payment or reviewer settings changed; refresh and approve the current terms", 409);
+    }
     const snapshot = {
       goalId: goal.id, goalVersion: goal.goal_version, rubricVersion: goal.rubric_version,
       primarySku: input.primarySku, alternativeSkus: input.alternativeSkus, totalCapMinor: input.totalCapMinor,
@@ -108,17 +128,19 @@ export async function createPermission(userId: string, raw: unknown) {
       quantity: 1, currency: "USD", syntheticDestinationId: "demo-us-address",
       paymentConnectionId: null,
       executionMode,
+      reviewProvider: reviewer.provider, reviewModel: reviewer.model,
+      ownerConfirmed: input.ownerConfirmed,
     };
     const hash = sha256(JSON.stringify(snapshot));
     const permission = await client.query(
       `INSERT INTO purchase_permissions
        (user_id,goal_id,goal_version,rubric_version,primary_sku,alternative_skus,approved_variants,seller,total_cap_minor,
-        earliest_date,latest_date,payment_connection_id,unattended_sandbox_approved,execution_mode,payload_hash)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+        earliest_date,latest_date,payment_connection_id,unattended_sandbox_approved,execution_mode,review_provider,review_model,payload_hash)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
        RETURNING *`,
       [userId, goal.id, goal.goal_version, goal.rubric_version, input.primarySku, JSON.stringify(input.alternativeSkus), JSON.stringify(snapshot.approvedVariants),
         primary.seller, input.totalCapMinor, input.earliestDate, input.latestDate, snapshot.paymentConnectionId,
-        false, executionMode, hash],
+        false, executionMode, reviewer.provider, reviewer.model, hash],
     );
     const intent = await client.query(
       "INSERT INTO purchase_intents (user_id,goal_id,cycle_id,permission_id) VALUES ($1,$2,$3,$4) RETURNING *",
@@ -172,6 +194,11 @@ export async function submitEvidence(userId: string, raw: unknown) {
     const result = await client.query("SELECT * FROM goals WHERE id = $1 AND user_id = $2 FOR UPDATE", [input.goalId, userId]);
     const goal = result.rows[0];
     if (!goal || goal.status !== "ACTIVE") throw new DomainError("GOAL_NOT_FOUND", "Active goal not found", 404);
+    const permission = await client.query("SELECT * FROM purchase_permissions WHERE goal_id = $1 AND user_id = $2 AND status = 'ACTIVE' LIMIT 1 FOR SHARE", [goal.id, userId]);
+    if (!permission.rows[0] || !reviewerPolicyFromPermission(permission.rows[0]) ||
+        permission.rows[0].goal_version !== goal.goal_version || permission.rows[0].rubric_version !== goal.rubric_version) {
+      throw new DomainError("PERMISSION_REQUIRED", "Approve a purchase and its evidence reviewer before submitting proof", 409);
+    }
     const businessDate = localDateAt(new Date(), goal.timezone);
     const start = pgDate(goal.start_date);
     const end = pgDate(goal.end_date_exclusive);
@@ -208,27 +235,19 @@ export async function getState(userId: string) {
     pool.query("SELECT * FROM purchase_intents WHERE goal_id = $1 AND user_id = $2 ORDER BY created_at DESC LIMIT 1", [goalId, userId]),
   ]);
   const g = goal.rows[0], p = permission.rows[0], i = intent.rows[0];
-  const requiredProvider = p && p.execution_mode !== "fixture" ? "anthropic" : null;
-  const progress = await pool.query(
-    `SELECT COUNT(*)::int AS count FROM daily_qualifications dq
-     JOIN evidence_submissions e ON e.id = dq.evidence_id
-     WHERE dq.goal_id = $1 AND dq.goal_version = $2 AND dq.rubric_version = $3
-       AND dq.local_date >= $4 AND dq.local_date < $5
-       AND ($6::text IS NULL OR (e.review_provider = $6 AND e.status = 'ACCEPTED'))`,
-    [goalId, g.goal_version, g.rubric_version, g.start_date, g.end_date_exclusive, requiredProvider],
-  );
+  const acceptedDays = p ? await countQualifyingDays(pool, g, p) : 0;
   const storeOrder = i ? await pool.query("SELECT id,total_minor,provider,status FROM mock_store_orders WHERE intent_id = $1", [i.id]) : { rows: [] };
   const kernelProof = i?.store_session_id ? await pool.query(
     `SELECT a.id FROM audit_events a JOIN mock_store_carts c ON c.session_id = $3::uuid
      WHERE a.user_id = $1 AND a.type = 'KERNEL_CART_VERIFIED'
-       AND a.details->>'intentId' = $2 AND a.details->>'storeSessionId' = $3
+       AND a.details->>'intentId' = $2 AND a.details->>'storeSessionId' = $3::text
        AND a.details->>'sku' = c.sku LIMIT 1`,
     [userId, i.id, i.store_session_id],
   ) : { rows: [] };
   return {
     products: mapProducts(products.rows),
-    goal: { id: g.id, title: g.title, rubric: g.rubric, timezone: g.timezone, startDate: pgDate(g.start_date), endDateExclusive: pgDate(g.end_date_exclusive), requiredDays: g.required_days, acceptedDays: progress.rows[0].count, status: g.status },
-    permission: p ? { id: p.id, primarySku: p.primary_sku, alternativeSkus: p.alternative_skus, totalCapMinor: p.total_cap_minor, earliestDate: pgDate(p.earliest_date), latestDate: pgDate(p.latest_date), status: p.status, executionMode: p.execution_mode } : null,
+    goal: { id: g.id, title: g.title, rubric: g.rubric, timezone: g.timezone, startDate: pgDate(g.start_date), endDateExclusive: pgDate(g.end_date_exclusive), requiredDays: g.required_days, acceptedDays, status: g.status },
+    permission: p ? { id: p.id, primarySku: p.primary_sku, alternativeSkus: p.alternative_skus, approvedVariants: p.approved_variants, seller: p.seller, quantity: p.quantity, currency: p.currency, syntheticDestinationId: p.synthetic_destination_id, totalCapMinor: p.total_cap_minor, earliestDate: pgDate(p.earliest_date), latestDate: pgDate(p.latest_date), status: p.status, executionMode: p.execution_mode, reviewProvider: p.review_provider, reviewModel: p.review_model } : null,
     evidence: submissions.rows.map((row) => ({ id: row.id, businessDate: pgDate(row.business_date), status: row.status, reviewProvider: row.review_provider, reviewModel: row.review_model, reviewResult: row.review_result, createdAt: row.created_at })),
     purchase: i ? { id: i.id, status: i.state, state: i.state, selectedSku: i.selected_sku, storeOrderId: storeOrder.rows[0]?.id ?? null, totalMinor: storeOrder.rows[0]?.total_minor ?? null, orderId: i.order_id, captureId: i.capture_id, receiptProvider: i.receipt_provider, reason: i.reason,
       browserProvider: kernelProof.rows[0] ? "Kernel (two sessions verified)" : i.store_session_id ? "Direct controlled store" : "Not prepared" } : null,

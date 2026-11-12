@@ -125,7 +125,7 @@ export async function getKernelCartStatus(userId: string) {
     row.store_session_id ? getPool().query<{ id: string }>(
       `SELECT a.id FROM audit_events a JOIN mock_store_carts c ON c.session_id = $3::uuid
        WHERE a.user_id = $1 AND a.type = 'KERNEL_CART_VERIFIED'
-         AND a.details->>'intentId' = $2 AND a.details->>'storeSessionId' = $3
+         AND a.details->>'intentId' = $2 AND a.details->>'storeSessionId' = $3::text
          AND a.details->>'sku' = c.sku LIMIT 1`,
       [userId, row.id, row.store_session_id],
     ) : Promise.resolve({ rows: [] as Array<{ id: string }> }),

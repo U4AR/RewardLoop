@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { kernelStoreOrigin } from "./integrations/kernel-cart";
+import { selectReviewerPolicy } from "./domain/reviewer-policy";
 
 const envSchema = z.object({
   APP_RUNTIME: z.literal("hackathon").default("hackathon"),
@@ -21,6 +22,11 @@ const envSchema = z.object({
   KERNEL_API_KEY: z.string().optional(),
   ANTHROPIC_API_KEY: z.string().optional(),
   EVIDENCE_MODEL: z.string().optional(),
+  VERTEX_PROJECT_ID: z.string().regex(/^[a-z][a-z0-9-]{4,61}[a-z0-9]$/).optional(),
+  VERTEX_MODEL: z.string().regex(/^[a-zA-Z0-9._-]+$/).default("gemini-3.8-flash"),
+  VERTEX_LOCATION: z.string().regex(/^[a-z0-9-]+$/).default("global"),
+  GOOGLE_AUTH_MODE: z.enum(["adc", "gcloud"]).default("adc"),
+  GOOGLE_CLOUD_ACCOUNT: z.string().email().optional(),
   LOCAL_EVIDENCE_URL: z.preprocess((value) => value === "" ? undefined : value, z.url().optional()),
   LOCAL_EVIDENCE_MODEL: z.preprocess((value) => value === "" ? undefined : value, z.string().min(1).max(120).optional()),
   SHOPPING_MODEL: z.string().optional(),
@@ -64,11 +70,13 @@ export function providerMode(config: AppConfig) {
     try { kernelStoreOrigin(config.MOCK_STORE_ORIGIN, config.APP_ORIGIN); kernelAvailable = true; }
     catch { /* A local or shared store cannot be used from a Kernel browser. */ }
   }
+  const reviewer = selectReviewerPolicy(config);
   return {
     catalog: config.CHANNEL3_API_KEY ? "channel3" : "fixture",
-    evidence: config.ANTHROPIC_API_KEY && config.EVIDENCE_MODEL ? "anthropic" :
-      config.LOCAL_EVIDENCE_URL && config.LOCAL_EVIDENCE_MODEL ? "local_llama" : "fixture",
+    evidence: reviewer?.provider ?? "unavailable",
+    evidenceModel: reviewer?.model ?? "none",
     browser: kernelAvailable ? "Kernel cart preparation available" : "direct mock store",
-    payment: config.PAYPAL_SANDBOX_CLIENT_ID && config.PAYPAL_SANDBOX_CLIENT_SECRET ? "paypal_sandbox" : "fixture or blocked",
+    payment: config.PAYPAL_SANDBOX_CLIENT_ID && config.PAYPAL_SANDBOX_CLIENT_SECRET && config.PAYPAL_SANDBOX_MERCHANT_ID
+      ? "paypal_sandbox" : "fixture or blocked",
   } as const;
 }

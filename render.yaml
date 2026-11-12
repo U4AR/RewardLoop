@@ -1,136 +1,60 @@
-# Preparation only. Syncing this Blueprint would create paid resources.
-# Review the exact Render quote, credits, judge access, store hostname, and secrets first.
+# Main reward workspace: one web process, hosted Gemini, real retailer links.
+# Configure secrets and review the credit balance before deploying.
 services:
   - type: web
-    name: rewardloop-web
+    name: rewardloop
     runtime: node
-    plan: 0.5c-512mb
-    region: oregon
+    plan: free
+    region: singapore
     autoDeployTrigger: off
-    buildCommand: npm ci && npm run build
-    preDeployCommand: npm run db:migrate && npm run auth:migrate
-    startCommand: npm start
+    buildCommand: npm ci --no-audit --no-fund && npm run build
+    startCommand: npm run db:migrate && npm run auth:migrate && npm start
     healthCheckPath: /api/healthz
     envVars:
       - key: NODE_VERSION
         value: 24.19.0
-      - key: DATABASE_URL
-        fromDatabase:
-          name: rewardloop-db
-          property: connectionString
-      - key: APP_RUNTIME
-        value: hackathon
       - key: APP_ORIGIN
         sync: false
       - key: BETTER_AUTH_URL
+        sync: false
+      - key: DATABASE_URL
         sync: false
       - key: BETTER_AUTH_SECRET
         generateValue: true
       - key: DATA_ENCRYPTION_KEY
-        # Supply a pre-generated 32-byte base64url value (43 characters).
-        # Render's generated base64 value has a different encoding.
         sync: false
       - key: ALLOW_LOCAL_SIGNUP
         value: 'false'
+      - key: DEMO_ACCESS_USER
+        value: demo
+      - key: DEMO_ACCESS_PASSCODE
+        sync: false
       - key: ALLOW_FIXTURE_PROVIDERS
         value: 'false'
-      - key: PAYMENT_PROVIDER
-        value: paypal_sandbox
-      - key: PAYPAL_ENV
-        value: sandbox
-      - key: PAYPAL_API_BASE_URL
-        value: https://api-m.sandbox.paypal.com
-      - key: PAYPAL_SANDBOX_CLIENT_ID
-        sync: false
-      - key: PAYPAL_SANDBOX_CLIENT_SECRET
-        sync: false
-      - key: PAYPAL_SANDBOX_MERCHANT_ID
-        sync: false
-      - key: PAYPAL_SANDBOX_WEBHOOK_ID
-        sync: false
       - key: CHANNEL3_API_KEY
-        sync: false
-      - key: MOCK_STORE_ORIGIN
-        sync: false
-
-  - type: worker
-    name: rewardloop-worker
-    runtime: node
-    plan: 0.5c-512mb
-    region: oregon
-    autoDeployTrigger: off
-    buildCommand: npm ci
-    startCommand: npm run worker
-    envVars:
-      - key: NODE_VERSION
-        value: 24.19.0
-      - key: DATABASE_URL
-        fromDatabase:
-          name: rewardloop-db
-          property: connectionString
-      - key: APP_RUNTIME
-        value: hackathon
-      - key: APP_ORIGIN
-        fromService:
-          name: rewardloop-web
-          type: web
-          envVarKey: APP_ORIGIN
-      - key: BETTER_AUTH_URL
-        fromService:
-          name: rewardloop-web
-          type: web
-          envVarKey: BETTER_AUTH_URL
-      - key: BETTER_AUTH_SECRET
-        fromService:
-          name: rewardloop-web
-          type: web
-          envVarKey: BETTER_AUTH_SECRET
-      - key: DATA_ENCRYPTION_KEY
-        fromService:
-          name: rewardloop-web
-          type: web
-          envVarKey: DATA_ENCRYPTION_KEY
-      - key: ALLOW_LOCAL_SIGNUP
-        value: 'false'
-      - key: ALLOW_FIXTURE_PROVIDERS
-        value: 'false'
-      - key: PAYMENT_PROVIDER
-        value: paypal_sandbox
-      - key: PAYPAL_ENV
-        value: sandbox
-      - key: PAYPAL_API_BASE_URL
-        value: https://api-m.sandbox.paypal.com
-      - key: PAYPAL_SANDBOX_CLIENT_ID
-        fromService:
-          name: rewardloop-web
-          type: web
-          envVarKey: PAYPAL_SANDBOX_CLIENT_ID
-      - key: PAYPAL_SANDBOX_CLIENT_SECRET
-        fromService:
-          name: rewardloop-web
-          type: web
-          envVarKey: PAYPAL_SANDBOX_CLIENT_SECRET
-      - key: PAYPAL_SANDBOX_MERCHANT_ID
-        fromService:
-          name: rewardloop-web
-          type: web
-          envVarKey: PAYPAL_SANDBOX_MERCHANT_ID
-      - key: MOCK_STORE_ORIGIN
-        fromService:
-          name: rewardloop-web
-          type: web
-          envVarKey: MOCK_STORE_ORIGIN
-      - key: ANTHROPIC_API_KEY
-        sync: false
-      - key: EVIDENCE_MODEL
         sync: false
       - key: KERNEL_API_KEY
         sync: false
-
-databases:
-  - name: rewardloop-db
-    plan: 0.1c-256mb
-    region: oregon
-    diskSizeGB: 1
-    storageAutoscalingEnabled: false
-    ipAllowList: []
+      - key: PAYPAL_SANDBOX_CLIENT_ID
+        sync: false
+      - key: PAYPAL_SANDBOX_CLIENT_SECRET
+        sync: false
+      - key: PAYPAL_SANDBOX_MERCHANT_ID
+        sync: false
+      - key: PAYPAL_ENV
+        value: sandbox
+      - key: PAYPAL_API_BASE_URL
+        value: https://api-m.sandbox.paypal.com
+      - key: VERTEX_PROJECT_ID
+        value: gen-lang-client-0907473631
+      - key: VERTEX_MODEL
+        value: gemini-3.8-flash
+      - key: VERTEX_LOCATION
+        value: global
+      - key: GOOGLE_AUTH_MODE
+        value: adc
+      - key: GOOGLE_APPLICATION_CREDENTIALS
+        value: /etc/secrets/google-credentials.json
+# Supply google-credentials.json via Render secret files or workload identity.
+# Existing durable PostgreSQL is required; no database is created here.
+# Optional legacy sandbox blueprint: render.sandbox.yaml.

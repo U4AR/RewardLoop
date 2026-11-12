@@ -3,6 +3,7 @@ import {
   assessSandboxOrder,
   PayPalSandboxClient,
   PAYPAL_SANDBOX_API_BASE_URL,
+  sandboxBuyerApprovalUrl,
   usdFromCents,
 } from "./paypal-sandbox.js";
 
@@ -67,21 +68,45 @@ describe("Orders v2 saved-wallet payment", () => {
   it("creates a fresh buyer-approved Sandbox order without a vault token", async () => {
     const fetchMock = vi.fn(async (url: string | URL | Request, _init?: RequestInit) => {
       if (String(url).endsWith("/v1/oauth2/token")) return json(token);
-      if (String(url).endsWith("/v2/checkout/orders")) return json(order("CREATED"), 201);
+      if (String(url).endsWith("/v2/checkout/orders")) return json({
+        ...order("PAYER_ACTION_REQUIRED"),
+        links: [{ href: "https://www.sandbox.paypal.com/checkoutnow?token=1AB23456CD789012E",
+          rel: "payer-action", method: "GET" }],
+      }, 201);
       throw new Error("unexpected request");
     });
     const result = await client(fetchMock as typeof fetch).createFreshOrder({
       totalCents: 1234, referenceId: "purchase_1", requestId: "fresh-operation-uuid-1",
+      returnUrl: "http://localhost:3000/?paypal_fresh=approved",
+      cancelUrl: "http://localhost:3000/?paypal_fresh=canceled",
     });
-    expect(result).toMatchObject({ orderId: "1AB23456CD789012E", state: "NEEDS_USER" });
+    expect(result).toMatchObject({
+      orderId: "1AB23456CD789012E", state: "NEEDS_USER",
+      approvalUrl: "https://www.sandbox.paypal.com/checkoutnow?token=1AB23456CD789012E",
+    });
     const [, init] = fetchMock.mock.calls[1];
     const body = JSON.parse(String(init?.body));
-    expect(body.payment_source).toBeUndefined();
+    expect(body.payment_source).toEqual({ paypal: { experience_context: {
+      return_url: "http://localhost:3000/?paypal_fresh=approved",
+      cancel_url: "http://localhost:3000/?paypal_fresh=canceled",
+      user_action: "PAY_NOW", shipping_preference: "NO_SHIPPING",
+    } } });
     expect(body.purchase_units[0]).toMatchObject({
       reference_id: "purchase_1", payee: { merchant_id: merchantId },
       amount: { currency_code: "USD", value: "12.34" },
     });
     expect(init?.headers).toMatchObject({ "PayPal-Request-Id": "fresh-operation-uuid-1" });
+  });
+
+  it.each([
+    "https://www.paypal.com/checkoutnow?token=1AB23456CD789012E",
+    "https://www.sandbox.paypal.com.evil.test/checkoutnow?token=1AB23456CD789012E",
+    "http://www.sandbox.paypal.com/checkoutnow?token=1AB23456CD789012E",
+    "https://www.sandbox.paypal.com/checkoutnow?token=DIFFERENT",
+    "https://www.sandbox.paypal.com/checkoutnow?token=1AB23456CD789012E&next=https://evil.test",
+  ])("rejects an unsafe Sandbox approval link %s", (href) => {
+    expect(() => sandboxBuyerApprovalUrl({ links: [{ rel: "payer-action", method: "GET", href }] },
+      "1AB23456CD789012E")).toThrow("Invalid Sandbox approval link");
   });
   it("sends a frozen USD create request with a caller-provided idempotency ID and detects auto-capture", async () => {
     const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {

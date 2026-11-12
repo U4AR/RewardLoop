@@ -53,6 +53,7 @@ export type GateInput = {
 export function evaluatePurchaseGate(input: GateInput): { allowed: true } | { allowed: false; code: GateCode } {
   const deny = (code: GateCode) => ({ allowed: false as const, code });
   if (input.runtime !== "hackathon" || input.paymentHost !== "https://api-m.sandbox.paypal.com") return deny("LIVE_PAYMENT_FORBIDDEN");
+  if (!["fixture", "paypal_sandbox", "paypal_sandbox_fresh"].includes(input.permission.executionMode)) return deny("PAYMENT_NOT_READY");
   if (input.actorUserId !== input.intentUserId || input.permission.userId !== input.intentUserId) return deny("WRONG_OWNER");
   if (input.goal.version !== input.permission.goalVersion || input.goal.rubricVersion !== input.permission.rubricVersion) return deny("GOAL_VERSION_CHANGED");
   if (input.goal.status !== "ACTIVE" || input.permission.status !== "ACTIVE") return deny("PERMISSION_INACTIVE");

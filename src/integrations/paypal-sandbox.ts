@@ -45,6 +45,8 @@ export interface CreateFreshSandboxOrderInput {
   totalCents: number;
   referenceId: string;
   requestId: string;
+  returnUrl: string;
+  cancelUrl: string;
   beforeFinancialPost?: () => Promise<void>;
 }
 
@@ -87,6 +89,8 @@ export interface SandboxOrderAssessment {
   orderId: string;
   orderStatus: string;
   state: SandboxOrderState;
+  /** The validated PayPal Sandbox buyer-approval link; never a live PayPal URL. */
+  approvalUrl?: string;
   captureId?: string;
   captureStatus?: string;
   /** Explains a fail-closed result without exposing provider PII. */
@@ -146,6 +150,44 @@ function assertCents(value: number): number {
     throw new PayPalSandboxError("Amount must be a positive, safe integer number of US cents");
   }
   return value;
+}
+
+function assertCheckoutCallbackUrl(value: string, label: string): string {
+  let url: URL;
+  try { url = new URL(value); }
+  catch { throw new PayPalSandboxError(`Invalid ${label}`); }
+  if (!["https:", "http:"].includes(url.protocol) || url.username || url.password || url.hash) {
+    throw new PayPalSandboxError(`Invalid ${label}`);
+  }
+  return url.toString();
+}
+
+/** Provider HATEOAS links are untrusted until their Sandbox origin and order token match. */
+export function sandboxBuyerApprovalUrl(value: unknown, expectedOrderId: string): string | undefined {
+  const links = asArray(asRecord(value)?.links) ?? [];
+  for (const entry of links) {
+    const link = asRecord(entry);
+    if (link?.rel !== "payer-action" && link?.rel !== "approve") continue;
+    if (link.method !== "GET" || typeof link.href !== "string") {
+      throw new PayPalSandboxError("Invalid Sandbox approval link");
+    }
+    let url: URL;
+    try { url = new URL(link.href); }
+    catch { throw new PayPalSandboxError("Invalid Sandbox approval link"); }
+    if (url.origin !== "https://www.sandbox.paypal.com" || url.username || url.password || url.hash ||
+        url.pathname !== "/checkoutnow" || url.searchParams.getAll("token").length !== 1 ||
+        url.searchParams.get("token") !== expectedOrderId ||
+        [...url.searchParams.keys()].some((key) => key !== "token")) {
+      throw new PayPalSandboxError("Invalid Sandbox approval link");
+    }
+    return url.toString();
+  }
+  return undefined;
+}
+
+function availableSandboxApprovalUrl(value: unknown, expectedOrderId: string): string | undefined {
+  try { return sandboxBuyerApprovalUrl(value, expectedOrderId); }
+  catch { return undefined; } // Preserve the created order ID without sending a buyer to an unsafe link.
 }
 
 export function usdFromCents(cents: number): string {
@@ -395,20 +437,35 @@ export class PayPalSandboxClient {
     };
     if (!this.merchantId) throw new PayPalSandboxError("Sandbox merchant ID is required");
     unit.payee = { merchant_id: this.merchantId };
+    const returnUrl = assertCheckoutCallbackUrl(input.returnUrl, "Sandbox return URL");
+    const cancelUrl = assertCheckoutCallbackUrl(input.cancelUrl, "Sandbox cancel URL");
     const data = await this.apiRequest("POST", "/v2/checkout/orders", {
       requestId,
       preferRepresentation: true,
       beforeFinancialPost: input.beforeFinancialPost,
-      body: { intent: "CAPTURE", purchase_units: [unit] },
+      body: {
+        intent: "CAPTURE", purchase_units: [unit],
+        payment_source: { paypal: { experience_context: {
+          return_url: returnUrl, cancel_url: cancelUrl,
+          user_action: "PAY_NOW", shipping_preference: "NO_SHIPPING",
+        } } },
+      },
     });
-    return this.resolveOrder(data, input.totalCents, referenceId);
+    const result = await this.resolveOrder(data, input.totalCents, referenceId);
+    return result.state === "NEEDS_USER" && !result.reason
+      ? { ...result, approvalUrl: availableSandboxApprovalUrl(data, result.orderId) }
+      : result;
   }
 
   async getOrder(input: GetSandboxOrderInput): Promise<SandboxOrderAssessment> {
     const orderId = assertId(input.orderId, "order ID", 36);
     const referenceId = assertId(input.referenceId, "reference ID", 256);
     const data = await this.apiRequest("GET", `/v2/checkout/orders/${encodeURIComponent(orderId)}`);
-    return this.resolveOrder(data, input.expectedTotalCents, referenceId);
+    const result = await this.resolveOrder(data, input.expectedTotalCents, referenceId);
+    if (result.orderId !== orderId) return { ...result, state: "OUTCOME_UNKNOWN", reason: "REFERENCE_MISMATCH" };
+    return result.state === "NEEDS_USER" && !result.reason
+      ? { ...result, approvalUrl: availableSandboxApprovalUrl(data, result.orderId) }
+      : result;
   }
 
   /**

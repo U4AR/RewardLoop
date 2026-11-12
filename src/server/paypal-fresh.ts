@@ -7,6 +7,7 @@ import { localDateAt } from "../domain/clock";
 import { evaluatePurchaseGate } from "../domain/purchase-gate";
 import { PayPalSandboxClient, PayPalSandboxError } from "../integrations/paypal-sandbox";
 import { capturePayPal, financialPostStillAllowed } from "../worker/paypal-jobs";
+import { countQualifyingDays } from "./qualification";
 
 export class FreshCheckoutError extends Error {
   constructor(readonly code: string, readonly status = 409) { super(code); }
@@ -52,18 +53,6 @@ async function boundCart(db: PoolClient, intent: Record<string, unknown>, userId
   );
   if (!result.rows[0]?.sku) throw new FreshCheckoutError("SYNTHETIC_CART_NOT_READY");
   return result.rows[0];
-}
-
-async function qualificationCount(db: PoolClient, goal: Record<string, unknown>) {
-  const count = await db.query(
-    `SELECT COUNT(*)::int AS n FROM daily_qualifications dq
-     JOIN evidence_submissions e ON e.id = dq.evidence_id
-     WHERE dq.goal_id = $1 AND dq.goal_version = $2 AND dq.rubric_version = $3
-       AND dq.local_date >= $4 AND dq.local_date < $5
-       AND e.status = 'ACCEPTED' AND e.review_provider = 'anthropic'`,
-    [goal.id, goal.goal_version, goal.rubric_version, goal.start_date, goal.end_date_exclusive],
-  );
-  return Number(count.rows[0]?.n ?? 0);
 }
 
 function assertGate(userId: string, intent: Record<string, unknown>, permission: Record<string, unknown>,
@@ -140,12 +129,15 @@ export async function freshCheckoutStatus(userId: string) {
     status: intent?.state ?? "NOT_READY",
     ready: configured && intent?.execution_mode === "paypal_sandbox_fresh" &&
       ["BUYER_APPROVAL_REQUIRED", "BUYER_APPROVAL_PENDING"].includes(intent.state),
+    pendingOrderId: intent?.state === "BUYER_APPROVAL_PENDING" ? intent.order_id ?? undefined : undefined,
     clientId: configured ? config.PAYPAL_SANDBOX_CLIENT_ID : undefined,
     merchantId: configured ? config.PAYPAL_SANDBOX_MERCHANT_ID : undefined,
   };
 }
 
-export async function createFreshCheckoutOrder(userId: string): Promise<{ orderId: string }> {
+export async function createFreshCheckoutOrder(userId: string): Promise<{
+  orderId: string; approvalUrl?: string; alreadyApproved?: boolean;
+}> {
   const client = sandboxClient();
   const db = await getPool().connect();
   let operation: { id: string; intentId: string; totalMinor: number; requestId: string };
@@ -167,10 +159,17 @@ export async function createFreshCheckoutOrder(userId: string): Promise<{ orderI
           product.rows[0] && quoteMatchesProduct(quote.rows[0], product.rows[0]) &&
           createOp.rows[0]?.payload?.permissionHash === permission.payload_hash &&
           createOp.rows[0]?.payload?.storeSessionId === cart.store_session_id) {
-        const qualified = await qualificationCount(db, goal) >= goal.required_days;
+        const qualified = await countQualifyingDays(db, goal, permission) >= goal.required_days;
         assertGate(userId, intent, permission, goal, cart, product.rows[0], quote.rows[0].total_minor, qualified, true);
         await db.query("COMMIT");
-        return { orderId: intent.order_id };
+        const current = await client.getOrder({
+          orderId: intent.order_id, expectedTotalCents: quote.rows[0].total_minor, referenceId: intent.id,
+        });
+        if (current.reason || !["NEEDS_USER", "READY_TO_CAPTURE"].includes(current.state)) {
+          throw new FreshCheckoutError("EXISTING_SANDBOX_ORDER_REQUIRES_REVIEW");
+        }
+        return { orderId: intent.order_id, approvalUrl: current.approvalUrl,
+          alreadyApproved: current.state === "READY_TO_CAPTURE" };
       }
       // A PayPal order already exists for the frozen quote. Preserve its ID and
       // stop checkout instead of silently creating a second financial order.
@@ -188,17 +187,17 @@ export async function createFreshCheckoutOrder(userId: string): Promise<{ orderI
     const product = products.rows[0];
     if (!product || !product.available) throw new FreshCheckoutError("SYNTHETIC_ITEM_UNAVAILABLE");
     const totalMinor = product.price_minor + product.shipping_minor + product.tax_minor;
-    const qualified = await qualificationCount(db, goal) >= goal.required_days;
+    const qualified = await countQualifyingDays(db, goal, permission) >= goal.required_days;
     assertGate(userId, intent, permission, goal, cart, product, totalMinor, qualified, true);
     const quote = await db.query(
       `INSERT INTO mock_quotes (intent_id,sku,variant,seller,quantity,item_minor,shipping_minor,tax_minor,total_minor,inventory_version,destination_id,status,expires_at)
-       VALUES ($1,$2,$3,$4,1,$5,$6,$7,$8,$9,$10,'RESERVED',now() + interval '5 minutes') RETURNING id`,
+       VALUES ($1,$2,$3,$4,1,$5,$6,$7,$8,$9,$10,'RESERVED',now() + interval '15 minutes') RETURNING id`,
       [intent.id, product.sku, product.variant, product.seller, product.price_minor, product.shipping_minor,
         product.tax_minor, totalMinor, product.inventory_version, cart.destination_id],
     );
     const lease = await db.query(
       `UPDATE purchase_intents SET state = 'COMMITTING',selected_sku = $2,quote_id = $3,
-         lease_owner = 'worker',lease_fence = lease_fence + 1,lease_until = now() + interval '5 minutes',updated_at = now()
+         lease_owner = 'worker',lease_fence = lease_fence + 1,lease_until = now() + interval '15 minutes',updated_at = now()
        WHERE id = $1 RETURNING lease_fence`, [intent.id, product.sku, quote.rows[0].id],
     );
     const frozen = { intentId: intent.id, quoteId: quote.rows[0].id, sku: product.sku, variant: product.variant,
@@ -222,8 +221,11 @@ export async function createFreshCheckoutOrder(userId: string): Promise<{ orderI
   finally { db.release(); }
 
   try {
+    const appOrigin = new URL(getConfig().APP_ORIGIN).origin;
     const result = await client.createFreshOrder({
       totalCents: operation.totalMinor, referenceId: operation.intentId, requestId: operation.requestId,
+      returnUrl: `${appOrigin}/sandbox?paypal_fresh=approved`,
+      cancelUrl: `${appOrigin}/sandbox?paypal_fresh=canceled`,
       beforeFinancialPost: async () => {
         if (!await financialPostStillAllowed(operation.id, userId)) throw new FreshCheckoutError("PURCHASE_GATE_CHANGED");
       },
@@ -233,7 +235,7 @@ export async function createFreshCheckoutOrder(userId: string): Promise<{ orderI
     }
     const saved = await finishFreshCreate(operation, "AWAITING_BUYER", "BUYER_APPROVAL_PENDING", null, result.orderId);
     if (!saved) throw new FreshCheckoutError("FRESH_ORDER_OUTCOME_UNKNOWN", 202);
-    return { orderId: result.orderId };
+    return { orderId: result.orderId, approvalUrl: result.approvalUrl };
   } catch (error) {
     if (error instanceof FreshCheckoutError && error.code === "PURCHASE_GATE_CHANGED") {
       await finishFreshCreate(operation, "NO_PAYMENT", "NEEDS_USER", "Sandbox checkout expired before order creation", null);
@@ -274,7 +276,7 @@ export async function captureFreshCheckoutOrder(userId: string, orderId: string)
         quote.total_minor !== approvedOrder.rows[0].total_minor || intent.id !== approvedOrder.rows[0].id) {
       throw new FreshCheckoutError("QUOTE_EXPIRED_OR_CHANGED");
     }
-    const qualified = await qualificationCount(db, goal) >= goal.required_days;
+    const qualified = await countQualifyingDays(db, goal, permission) >= goal.required_days;
     assertGate(userId, intent, permission, goal, cart, product, quote.total_minor, qualified, intent.lease_until > new Date());
     const createOp = await db.query(
       "SELECT payload FROM payment_operations WHERE intent_id = $1 AND kind = 'create_fresh_order' AND order_id = $2 AND state = 'AWAITING_BUYER' ORDER BY generation DESC LIMIT 1 FOR SHARE",

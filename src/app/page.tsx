@@ -1,5 +1,5 @@
-import { RewardLoopApp } from "@/components/reward-loop-app";
+import { RewardWorkspace } from "@/components/reward-workspace";
 
 export default function Home() {
-  return <RewardLoopApp />;
+  return <RewardWorkspace />;
 }

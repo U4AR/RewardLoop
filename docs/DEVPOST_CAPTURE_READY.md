@@ -1,0 +1,44 @@
+# Devpost copy for the verified Sandbox capture
+
+This is an editing worksheet for the **verified 24 October Sandbox capture**, not a claim that the Devpost entry is finalized. The Render-backed signed-in run verified a pinned Qwen verdict, `1 of 1` qualifying day, exact synthetic Notebook set cart binding, US Sandbox buyer approval, and a $22.68 completed Sandbox capture under a $25.00 cap. The first PayPal SDK popup was blank; the successful run used a server-created Sandbox approval redirect. PayPal REST GET order and capture responses and Render database records were cross-checked. Keep the final entry focused on this working slice and do not paste private credentials.
+
+## Evidence to record before changing the entry
+
+- **Observed:** a real local Qwen3-1.7B response for the exact submitted database-index note and rubric, recorded as `local_llama` with the pinned model alias. The accepted review linked to the goal/rubric version and one distinct business day; the app showed `1 of 1`. Preserve a redacted screen or query record for the final video. A model verdict assesses the text; it does not prove unobserved study time.
+- **Observed:** a saved synthetic notebook cart on the separate local store hostname, bound to the same signed-in user's goal and approved item/variant/seller/quantity, destination, USD cap, and window. Fixture payment providers were disabled for this run. Preserve the exact cart and permission match in the redacted demonstration record.
+- **Observed:** US buyer approval for PayPal Sandbox order `1AD52467A58843710` and capture `65X65580W2293373U`. REST GET order and GET capture both returned `COMPLETED`, USD 22.68, and the configured Sandbox merchant; the order reference matched the persisted intent. Render recorded `CONFIRMED` intent and capture operation, with the synthetic store order `SIMULATED_PAID`. A prior buyer-approved order expired before capture; no capture or receipt was recorded for it, and it was not retried.
+- **Observed:** a receipt in the app displays the Sandbox order/capture IDs and synthetic-store disclaimer. No retailer order, shipment, live payment host, real card, or real-money transaction occurred.
+- A new video under three minutes showing **this actual run**: goal and bound approval, model review, synthetic cart, PayPal Sandbox buyer approval, and completed Sandbox receipt. Show the actual approval method used (SDK or server-created Sandbox redirect); do not imply the blank SDK popup succeeded. Inspect the exported video end to end and redact buyer details, email, access tokens, setup codes, cookies, client secret, and private URLs. The existing 99-second fixture walkthrough cannot evidence this capture. Check the video's required visibility against the official rules before final submission.
+- Public repository synchronized to the tested source, with MIT license, current local-run instructions, and no credentials/model weights. Re-run typecheck, tests, build, and one clean local setup/rehearsal after code changes. Judges need a free reproducible route through the judging period.
+
+## Form edits required
+
+Update the project story, PayPal/AI technical-requirement answer, testing instructions, built-with tags, video URL, and any thumbnail or captions that still show the fixture-only receipt. The Additional Info feedback currently says “real capture testing remains pending”; keep the user-approved 7/10 rating but change the reason only if the owner approves a new subjective statement. The saved submitter answers are Individual and India; eligibility and final rules/Devpost terms are personal declarations and require action-time owner confirmation. Do not click final Submit until that confirmation and the provider evidence are both present.
+
+## Proposed tagline
+
+Earn an approved reward with AI-reviewed progress and a bounded PayPal Sandbox checkout.
+
+## Proposed project story
+
+**Inspiration.** A reward promised after a goal is easy to forget or change when the time comes to buy it. RewardLoop lets a person specify the evidence rule and the exact purchase limits up front, then checks those limits again at checkout.
+
+**What it does.** In the demonstrated one-day flow, a signed-in user chooses a reward from our synthetic store, writes a content-based goal, and approves one item, destination, time window, and all-in USD cap. A self-hosted Qwen3-1.7B model reviews the submitted note against that rubric. Trusted application code counts the qualifying day and checks the current permission and bound store cart. The user then approves a single test purchase through PayPal Sandbox; the app displays the confirmed Sandbox capture and a synthetic-store receipt. No retailer receives an order and nothing ships.
+
+**How it works.** The TypeScript/Next.js app stores goals, versioned permissions, evidence, cart bindings, quotes, and payment operations in a Render PostgreSQL database. A separate local worker handles evidence review and purchase preparation. The AI response is recorded with its model identity; the model cannot widen the approved item or amount. Before calling PayPal Orders v2, a deterministic server gate checks the current goal/rubric version, model-reviewed qualification, active permission, exact synthetic cart, listing/quote, window, currency, and total cap. The demonstrated Checkout path requires fresh Sandbox buyer approval for that purchase. A stable request ID and persisted operation state prevent a worker retry from silently creating a second payment. The completed capture is matched to the expected order, merchant, USD amount, and reference before it is shown as success.
+
+**Other verified integration.** Channel3's live search and product-detail API supply discovery references. Those results are separate from the controlled synthetic store; RewardLoop does not follow a retailer checkout link or place a retailer order.
+
+**What we learned.** A delayed reward needs two different decisions: interpreting the submitted evidence and enforcing the person's exact purchase terms. Keeping the AI verdict as evidence and the financial gate in deterministic code made the Sandbox transaction auditable. Testing the separate synthetic store also exposed an origin-check bug, which we fixed before linking its cart to a purchase intent.
+
+Only include the Channel3 paragraph if the final recorded demo or released source still supports the already observed live API result. Do not add Kernel cloud restoration, Vault-based unattended charging, Anthropic inference, alternative-item recovery, or hosted deployment unless each is separately observed and shown accurately.
+
+## Proposed PayPal + AI technical answer
+
+RewardLoop used a self-hosted Qwen3-1.7B model through a loopback llama.cpp endpoint to review the user's text against a versioned, content-based rubric. The app stored the model identity and verdict and counted the accepted business day in application code. Once that goal qualified and the exact synthetic cart and approved cap still matched, the server created a PayPal **Sandbox** Orders v2 order. A US Sandbox test buyer approved it through PayPal's Sandbox approval page, and the server captured and verified the resulting Sandbox payment. The observed run completed with Sandbox order `1AD52467A58843710`, capture `65X65580W2293373U`, amount **USD 22.68**, and matched merchant/reference. PayPal's live API and retailer checkout were never used.
+
+## Proposed testing instructions
+
+The public [RewardLoop repository](https://github.com/U4AR/RewardLoop) includes the MIT license and local setup commands. Run PostgreSQL (local or the documented Render database), the Next.js app, worker, and the pinned local Qwen model as described in its README and `docs/LOCAL_AI.md`. Use a free PayPal Developer **Sandbox** REST app with separate Sandbox Business seller and US Personal test buyer accounts; put credentials in ignored `.env.local`, keep `PAYPAL_ENV=sandbox`, `PAYMENT_PROVIDER=paypal_sandbox`, and `ALLOW_FIXTURE_PROVIDERS=false`, and use only the Sandbox API host. Create a synthetic account, set a one-day content-based goal and bounded permission, save a cart at `http://127.0.0.1:3000/store`, bind it in the app at `http://localhost:3000/`, and submit substantive evidence. When the model-reviewed goal qualifies, use **Continue to PayPal Sandbox** for fresh buyer approval and **Complete PayPal Sandbox capture** after returning to the app. Inspect the completed capture/receipt. The included tests exercise refusal and retry paths. No real retailer or live payment account is needed.
+
+Before using this text, verify that a fresh judge setup actually completes with the published instructions. If a hosted URL is added, replace these instructions with the tested host and access steps. A bare `localhost` URL is not a judge-accessible demo URL.

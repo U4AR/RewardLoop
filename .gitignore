@@ -1,5 +1,6 @@
 node_modules/
 .next/
+.next-*/
 dist/
 coverage/
 playwright-report/
@@ -16,6 +17,8 @@ test-results/
 *.pfx
 provider-evidence/
 .local-postgres/
+.local-postgres-*/
 .local-models/
 video/.work/
 video/
+work/

@@ -1,11 +1,9 @@
 "use client";
 
 import { createAuthClient } from "better-auth/react";
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
-import { CatalogDiscovery } from "./catalog-discovery";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { FreshSandboxCheckout } from "./fresh-sandbox-checkout";
 import { MockStoreSetup } from "./mock-store-setup";
-import { SandboxWallet } from "./sandbox-wallet";
 
 const authClient = createAuthClient();
 
@@ -24,7 +22,23 @@ type AppState = {
   providerMode: string | Record<string, unknown> | null;
 };
 
-type BusyAction = "goal" | "permission" | "revoke" | "evidence" | "refresh" | null;
+type BusyAction = "goal" | "permission" | "revoke" | "evidence" | null;
+type Step = "reward" | "goal" | "limit" | "cart" | "proof" | "pay" | "done" | "revoked";
+
+const RAIL: Array<{ key: Step; label: string }> = [
+  { key: "reward", label: "Reward" },
+  { key: "goal", label: "Goal" },
+  { key: "limit", label: "Limit" },
+  { key: "cart", label: "Cart" },
+  { key: "proof", label: "Proof" },
+  { key: "pay", label: "Pay" },
+];
+
+const PRODUCT_ART: Record<string, string> = {
+  "focus-timer-cream": "⏱",
+  "study-lamp-sage": "💡",
+  "notebook-set-blue": "📓",
+};
 
 function textField(record: Record<string, unknown> | null, ...keys: string[]) {
   if (!record) return "";
@@ -46,43 +60,42 @@ function numberField(record: Record<string, unknown> | null, ...keys: string[]) 
   return null;
 }
 
-function productSku(product: Product) {
-  return textField(product, "sku", "id");
+function productSku(product: Product) { return textField(product, "sku", "id"); }
+function productTitle(product: Product) { return textField(product, "title", "name") || "Reward"; }
+function productPrice(product: Product) { return numberField(product, "priceMinor", "priceCents", "observedPriceMinor"); }
+function allIn(product: Product | null) {
+  if (!product) return null;
+  const parts = ["priceMinor", "shippingMinor", "taxMinor"].map((key) => numberField(product, key));
+  return parts.every((value) => value !== null) ? parts.reduce<number>((sum, value) => sum + (value ?? 0), 0) : null;
 }
 
-function productTitle(product: Product) {
-  return textField(product, "title", "name") || "Demo reward";
-}
-
-function productPrice(product: Product) {
-  return numberField(product, "priceMinor", "priceCents", "observedPriceMinor");
-}
-
-function evidenceReason(item: Evidence) {
+function reviewOf(item: Evidence) {
   const review = item.reviewResult;
-  if (review && typeof review === "object" && !Array.isArray(review)) {
-    const reason = textField(review as Record<string, unknown>, "reason");
-    if (reason) return reason;
-  }
-  const directReason = textField(item, "reviewReason", "reason");
-  if (directReason) return directReason;
-  const status = textField(item, "status", "decision").toUpperCase();
-  return status === "ACCEPTED" || status === "REJECTED" ? "Reviewed against your evidence rule." : "Review in progress";
+  return review && typeof review === "object" && !Array.isArray(review) ? review as Record<string, unknown> : null;
+}
+
+function missingOf(item: Evidence): string[] {
+  const missing = reviewOf(item)?.missingRequirements;
+  return Array.isArray(missing) ? missing.filter((value): value is string => typeof value === "string") : [];
 }
 
 function money(minor: number | null) {
-  return minor === null ? "Price unavailable" : `$${(minor / 100).toFixed(2)}`;
+  return minor === null ? "—" : `$${(minor / 100).toFixed(2)}`;
+}
+
+function shortDate(iso: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return iso;
+  return new Date(`${iso}T12:00:00Z`).toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" });
 }
 
 function inTimeZone(timeZone: string) {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(new Date());
+  const parts = new Intl.DateTimeFormat("en-US", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date());
   const value = (key: string) => parts.find((part) => part.type === key)?.value || "";
   return `${value("year")}-${value("month")}-${value("day")}`;
+}
+
+function localTimeZone() {
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"; } catch { return "UTC"; }
 }
 
 function addDays(isoDate: string, days: number) {
@@ -98,15 +111,24 @@ function dollarsToMinor(value: string) {
   return Number(whole) * 100 + Number(fraction.padEnd(2, "0"));
 }
 
+const FRIENDLY_ERRORS: Record<string, string> = {
+  INVALID_INPUT: "Something in this form isn’t quite right. Check it and try again.",
+  UNAUTHENTICATED: "Your session ended. Sign in again.",
+  DUPLICATE_EVIDENCE: "You already sent these exact notes.",
+  OUTSIDE_GOAL_PERIOD: "Today is outside your goal’s dates.",
+  PERMISSION_REQUIRED: "Approve your spending limit first.",
+  GOAL_NOT_FOUND: "Set up your goal first.",
+};
+
 function errorMessage(body: unknown, fallback: string) {
   if (body && typeof body === "object") {
     const value = body as Record<string, unknown>;
-    if (typeof value.error === "string") return value.error;
+    if (typeof value.message === "string" && value.message.trim()) return value.message;
+    if (typeof value.error === "string") return FRIENDLY_ERRORS[value.error] ?? (/^[A-Z_]+$/.test(value.error) ? fallback : value.error);
     if (value.error && typeof value.error === "object") {
       const nested = value.error as Record<string, unknown>;
       if (typeof nested.message === "string") return nested.message;
     }
-    if (typeof value.message === "string") return value.message;
   }
   return fallback;
 }
@@ -116,54 +138,28 @@ async function jsonRequest<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
     credentials: "same-origin",
     cache: "no-store",
-    headers: {
-      ...(init?.body ? { "Content-Type": "application/json" } : {}),
-      ...init?.headers,
-    },
+    headers: { ...(init?.body ? { "Content-Type": "application/json" } : {}), ...init?.headers },
   });
   const body: unknown = await response.json().catch(() => null);
-  if (!response.ok) {
-    throw new Error(errorMessage(body, `Request failed (${response.status}).`));
-  }
+  if (!response.ok) throw new Error(errorMessage(body, "That didn’t go through. Try again."));
   return body as T;
-}
-
-function statusClass(status: string) {
-  const normalized = status.toLowerCase();
-  if (normalized.includes("confirm") || normalized.includes("complete") || normalized.includes("accept")) return "status-success";
-  if (normalized.includes("need") || normalized.includes("pending") || normalized.includes("wait")) return "status-wait";
-  if (normalized.includes("fail") || normalized.includes("reject") || normalized.includes("cancel")) return "status-error";
-  return "status-neutral";
-}
-
-function provenanceEntries(mode: AppState["providerMode"]) {
-  if (typeof mode === "string" && mode) {
-    return [
-      ["Catalog", mode],
-      ["Evidence", mode],
-      ["Browser", mode],
-      ["Payment", mode],
-    ];
-  }
-  if (mode && typeof mode === "object") {
-    return ["catalog", "evidence", "browser", "payment"].map((key) => {
-      const value = mode[key];
-      return [key[0].toUpperCase() + key.slice(1), typeof value === "string" ? value : "Not reported"];
-    });
-  }
-  return [
-    ["Catalog", "Not reported"],
-    ["Evidence", "Not reported"],
-    ["Browser", "Not reported"],
-    ["Payment", "Not reported"],
-  ];
 }
 
 function providerValue(mode: AppState["providerMode"], key: string) {
   if (typeof mode === "string") return mode;
   if (mode && typeof mode === "object" && typeof mode[key] === "string") return mode[key] as string;
-  return "not reported";
+  return "";
 }
+
+function reviewerName(provider: string, model: string) {
+  if (provider === "google_vertex") return `Gemini (${model})`;
+  if (provider === "local_llama") return `${model.replace(/-Q\d.*$/, "").replace(/-/g, " ")}, running on this computer`;
+  if (provider === "anthropic") return `Claude (${model})`;
+  if (provider === "fixture") return "the offline test rule";
+  return "an AI reviewer";
+}
+
+/* ---------- Signed-out ---------- */
 
 function AuthPanel({ onAuthenticated }: { onAuthenticated: () => Promise<void> }) {
   const [mode, setMode] = useState<"signin" | "signup">("signup");
@@ -181,51 +177,45 @@ function AuthPanel({ onAuthenticated }: { onAuthenticated: () => Promise<void> }
       const result = mode === "signup"
         ? await authClient.signUp.email({ name: name.trim(), email: email.trim(), password })
         : await authClient.signIn.email({ email: email.trim(), password });
-      if (result.error) throw new Error(result.error.message || "Authentication failed.");
+      if (result.error) throw new Error(result.error.message || "That didn’t work. Check your details.");
       setPassword("");
       await onAuthenticated();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not sign in. Please try again.");
+      setError(cause instanceof Error ? cause.message : "That didn’t work. Check your details.");
     } finally {
       setPending(false);
     }
   }
 
   return (
-    <section className="auth-layout" aria-label="Demo account">
-      <div className="auth-story">
-        <span className="section-index">THE DEMO JOURNEY</span>
-        <h2>Small steps, a reward you chose.</h2>
-        <p>Start with one qualifying day. Choose a demo reward, set a clear rule, approve a maximum spend, and submit your notes.</p>
-        <ol className="journey-list">
-          <li><span>01</span> Pick a reward from the controlled demo store</li>
-          <li><span>02</span> Set the goal and approve a bounded instruction</li>
-          <li><span>03</span> Submit proof and see what the reviewer decided</li>
-          <li><span>04</span> See whether the server permits the Sandbox purchase</li>
-        </ol>
-      </div>
-      <div className="card auth-card">
-        <div className="auth-tabs" role="group" aria-label="Account action">
-          <button type="button" aria-pressed={mode === "signup"} className={mode === "signup" ? "active" : ""} onClick={() => { setMode("signup"); setError(""); }}>Create account</button>
-          <button type="button" aria-pressed={mode === "signin"} className={mode === "signin" ? "active" : ""} onClick={() => { setMode("signin"); setError(""); }}>Sign in</button>
+    <section className="landing">
+      <div className="landing-copy">
+        <h1>Earn the things you want.</h1>
+        <p className="landing-lede">Pick a reward. Show up for your goal. When an AI checks your proof, RewardLoop buys it for you with PayPal.</p>
+        <div className="landing-card" aria-hidden="true">
+          <div className="stamp-card stamp-card--demo">
+            <div className="stamp-card__top"><span className="stamp-card__art">💡</span><div><strong>Study lamp</strong><span>Up to $40</span></div></div>
+            <div className="stamp-row stamp-row--3">
+              <span className="stamp stamp--on">✓</span><span className="stamp stamp--on">✓</span><span className="stamp" />
+            </div>
+            <p className="stamp-card__foot">One more day to go</p>
+          </div>
         </div>
-        <h2>{mode === "signup" ? "Try the sandbox demo" : "Welcome back"}</h2>
-        <p className="muted">This account is for the local hackathon demonstration.</p>
-        <form onSubmit={submit} className="stack-form">
+      </div>
+      <div className="panel auth-panel">
+        <div className="segmented" role="group" aria-label="Account">
+          <button type="button" aria-pressed={mode === "signup"} onClick={() => { setMode("signup"); setError(""); }}>Create account</button>
+          <button type="button" aria-pressed={mode === "signin"} onClick={() => { setMode("signin"); setError(""); }}>Sign in</button>
+        </div>
+        <form onSubmit={submit} className="form">
           {mode === "signup" && (
-            <label>Display name
-              <input value={name} onChange={(event) => setName(event.target.value)} autoComplete="name" minLength={2} required placeholder="Your name" />
-            </label>
+            <label>Your name<input value={name} onChange={(event) => setName(event.target.value)} autoComplete="name" minLength={2} required /></label>
           )}
-          <label>Email
-            <input type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="email" required placeholder="you@example.com" />
-          </label>
-          <label>Password
-            <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete={mode === "signup" ? "new-password" : "current-password"} minLength={8} required placeholder="At least 8 characters" />
-          </label>
-          {error && <p className="inline-error" role="alert">{error}</p>}
-          <button className="button button-primary button-wide" disabled={pending} type="submit">
-            {pending ? "Working…" : mode === "signup" ? "Create demo account" : "Sign in"}
+          <label>Email<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="email" required /></label>
+          <label>Password<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete={mode === "signup" ? "new-password" : "current-password"} minLength={8} required placeholder="8 characters or more" /></label>
+          {error && <p className="error" role="alert">{error}</p>}
+          <button className="btn btn-primary btn-wide" disabled={pending} type="submit">
+            {pending ? "One moment…" : mode === "signup" ? "Create account" : "Sign in"}
           </button>
         </form>
       </div>
@@ -233,37 +223,69 @@ function AuthPanel({ onAuthenticated }: { onAuthenticated: () => Promise<void> }
   );
 }
 
+/* ---------- Stamp card ---------- */
+
+function StampCard({ product, done, total, cap, until, state, punched }: {
+  product: Product | null; done: number; total: number; cap: number | null; until: string; state: Step; punched: boolean;
+}) {
+  const sku = product ? productSku(product) : "";
+  const slots = Math.max(1, Math.min(total, 10));
+  const earned = done >= total && total > 0;
+  const foot = state === "done" ? "Earned and paid"
+    : state === "revoked" ? "Purchase permission revoked"
+    : earned ? "Unlocked. Time to pay."
+    : total - done === 1 ? (done === 0 ? (total === 1 ? "One stamp unlocks it" : "One more stamp to go") : "One more stamp to go")
+    : `${total - done} stamps to go`;
+  return (
+    <div className={`stamp-card ${product ? "" : "stamp-card--empty"} ${earned ? "stamp-card--earned" : ""}`}>
+      <div className="stamp-card__top">
+        <span className="stamp-card__art" aria-hidden="true">{PRODUCT_ART[sku] ?? "🎁"}</span>
+        <div>
+          <strong>{product ? productTitle(product) : "Your reward"}</strong>
+          <span>{product ? (cap !== null ? `Up to ${money(cap)}${until ? `, by ${shortDate(until)}` : ""}` : money(productPrice(product))) : "Pick something you want"}</span>
+        </div>
+      </div>
+      <div className={`stamp-row stamp-row--${slots}`} role="img" aria-label={`${done} of ${total} days earned`}>
+        {Array.from({ length: slots }, (_, index) => {
+          const on = index < done;
+          const fresh = punched && index === done - 1;
+          return <span key={index} className={`stamp ${on ? "stamp--on" : ""} ${fresh ? "stamp--fresh" : ""}`}>{on ? "✓" : ""}</span>;
+        })}
+        {slots === 1 && (state === "done" ? <span className="earned-seal earned-seal--inline">Earned</span> : <span className="stamp-inline">{foot}</span>)}
+      </div>
+      {slots > 1 && <p className="stamp-card__foot">{foot}</p>}
+      {state === "done" && slots > 1 && <span className="earned-seal" aria-hidden="true">Earned</span>}
+    </div>
+  );
+}
+
+/* ---------- App ---------- */
+
 export function RewardLoopApp() {
   const { data: session, isPending: sessionPending, refetch: refetchSession } = authClient.useSession();
   const userId = session?.user?.id;
   const [state, setState] = useState<AppState | null>(null);
-  const [loadingState, setLoadingState] = useState(false);
   const [busy, setBusy] = useState<BusyAction>(null);
-  const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [selectedSku, setSelectedSku] = useState("");
-  const [alternativeSkus, setAlternativeSkus] = useState<string[]>([]);
-  const [goalTitle, setGoalTitle] = useState("Complete a focused study session");
-  const [rubric, setRubric] = useState("Submit at least three specific notes about what you learned or practiced today.");
-  const [timeZone, setTimeZone] = useState("America/New_York");
-  const [startDate, setStartDate] = useState(() => inTimeZone("America/New_York"));
-  const [endDate, setEndDate] = useState(() => addDays(inTimeZone("America/New_York"), 30));
+  const [goalTitle, setGoalTitle] = useState("Learn one database idea a day");
+  const [rubric, setRubric] = useState("Explain how a database index speeds up lookups, and name its write and storage trade-offs.");
+  const [timeZone] = useState(localTimeZone);
+  const [startDate, setStartDate] = useState(() => inTimeZone(localTimeZone()));
+  const [endDate, setEndDate] = useState(() => addDays(inTimeZone(localTimeZone()), 30));
   const [requiredDays, setRequiredDays] = useState(1);
   const [capDollars, setCapDollars] = useState("40.00");
-  const [earliestDate, setEarliestDate] = useState(() => inTimeZone("America/New_York"));
-  const [latestDate, setLatestDate] = useState(() => addDays(inTimeZone("America/New_York"), 30));
+  const [showDates, setShowDates] = useState(false);
+  const [permissionConsent, setPermissionConsent] = useState(false);
   const [notes, setNotes] = useState("");
+  const [punched, setPunched] = useState(false);
+  const lastDays = useRef<number | null>(null);
 
   const refreshState = useCallback(async () => {
-    setLoadingState(true);
     try {
-      const next = await jsonRequest<AppState>("/api/state");
-      setState(next);
-      setError("");
+      setState(await jsonRequest<AppState>("/api/state"));
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not load your demo state.");
-    } finally {
-      setLoadingState(false);
+      setError(cause instanceof Error ? cause.message : "Couldn’t load your reward.");
     }
   }, []);
 
@@ -280,29 +302,58 @@ export function RewardLoopApp() {
   const purchase = state?.purchase || null;
   const evidence = Array.isArray(state?.evidence) ? state.evidence : state?.evidence ? [state.evidence] : [];
   const primarySku = textField(permission, "primarySku") || selectedSku;
-  const selectedProduct = useMemo(() => products.find((product) => productSku(product) === primarySku) || null, [products, primarySku]);
+  const product = useMemo(() => products.find((item) => productSku(item) === primarySku) || null, [products, primarySku]);
   const goalId = textField(goal, "id", "goalId");
-  const acceptedDays = numberField(goal, "acceptedDays", "qualifyingDays", "progressDays") ?? 0;
+  const acceptedDays = numberField(goal, "acceptedDays") ?? 0;
   const targetDays = numberField(goal, "requiredDays") ?? requiredDays;
-  const progress = goal ? Math.min(100, Math.round((acceptedDays / Math.max(targetDays, 1)) * 100)) : 0;
-  const purchaseStatus = textField(purchase, "status", "state");
-  const catalogProvider = providerValue(state?.providerMode || null, "catalog");
-  const paymentProvider = textField(purchase, "receiptProvider") || providerValue(state?.providerMode || null, "payment");
-  const hasSandboxPayment = paymentProvider.toLowerCase().includes("paypal") && paymentProvider.toLowerCase().includes("sandbox");
-  const fixtureComplete = purchaseStatus.toUpperCase() === "CONFIRMED" && paymentProvider.toLowerCase() === "fixture";
-  const displayedPurchaseStatus = fixtureComplete ? "Fixture simulation complete" : purchaseStatus;
+  const purchaseStatus = textField(purchase, "status", "state").toUpperCase();
+  const browser = textField(purchase, "browserProvider");
+  const cartLinked = Boolean(browser && browser !== "Not prepared");
+  const plannedSandbox = providerValue(state?.providerMode || null, "payment") === "paypal_sandbox";
+  const plannedReviewer = providerValue(state?.providerMode || null, "evidence");
+  const plannedModel = providerValue(state?.providerMode || null, "evidenceModel");
+  const reviewerReady = ["anthropic", "google_vertex", "local_llama", "fixture"].includes(plannedReviewer) && (!plannedSandbox || plannedReviewer !== "fixture");
+  const reviewer = reviewerName(textField(permission, "reviewProvider") || plannedReviewer, textField(permission, "reviewModel") || plannedModel);
+  const receiptProvider = textField(purchase, "receiptProvider").toLowerCase();
+  const pendingReview = evidence.some((item) => textField(item, "status").toUpperCase() === "PENDING");
 
-  async function runAction(action: Exclude<BusyAction, null>, path: string, payload: Record<string, unknown>, success: string) {
+  let step: Step;
+  if (purchaseStatus === "CONFIRMED") step = "done";
+  else if (!goal || !permission) step = !primarySku ? "reward" : !goal ? "goal" : "limit";
+  else if (!activePermission) step = "revoked";
+  else if (!cartLinked) step = "cart";
+  else if (acceptedDays < targetDays) step = "proof";
+  else step = "pay";
+  const stepIndex = step === "done" ? RAIL.length : RAIL.findIndex((item) => item.key === step);
+
+  // Keep status live while the reviewer or payment is working.
+  useEffect(() => {
+    if (!userId) return;
+    if (!(pendingReview || step === "pay" || step === "cart")) return;
+    const timer = window.setInterval(() => { void refreshState(); }, 2500);
+    return () => window.clearInterval(timer);
+  }, [userId, pendingReview, step, refreshState]);
+
+  // Stamp the card when a new day is accepted.
+  useEffect(() => {
+    if (lastDays.current !== null && acceptedDays > lastDays.current) {
+      setPunched(true);
+      const timer = window.setTimeout(() => setPunched(false), 1800);
+      lastDays.current = acceptedDays;
+      return () => window.clearTimeout(timer);
+    }
+    lastDays.current = acceptedDays;
+  }, [acceptedDays]);
+
+  async function runAction(action: Exclude<BusyAction, null>, path: string, payload: Record<string, unknown>) {
     setBusy(action);
     setError("");
-    setMessage("");
     try {
       await jsonRequest(path, { method: "POST", body: JSON.stringify(payload) });
       await refreshState();
-      setMessage(success);
       return true;
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "The request did not complete.");
+      setError(cause instanceof Error ? cause.message : "That didn’t go through. Try again.");
       return false;
     } finally {
       setBusy(null);
@@ -311,190 +362,239 @@ export function RewardLoopApp() {
 
   async function submitGoal(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (startDate >= endDate) { setError("The goal end date must be after its start date."); return; }
-    try { new Intl.DateTimeFormat("en-US", { timeZone }).format(); }
-    catch { setError("Enter a valid IANA timezone, such as America/New_York."); return; }
+    if (startDate >= endDate) { setError("The end date must come after the start date."); return; }
     await runAction("goal", "/api/goals", {
-      title: goalTitle.trim(), rubric: rubric.trim(), timezone: timeZone.trim(),
+      title: goalTitle.trim(), rubric: rubric.trim(), timezone: timeZone,
       requiredDays, startDate, endDateExclusive: endDate,
-    }, "Goal saved. Now approve the reward and maximum spend.");
+    });
   }
 
   async function submitPermission(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const totalCapMinor = dollarsToMinor(capDollars);
-    if (totalCapMinor === null || totalCapMinor < 1) { setError("Enter a valid USD cap, such as 40.00."); return; }
-    if (!goalId || !selectedSku) { setError("Choose a reward and save a goal first."); return; }
-    if (earliestDate >= latestDate) { setError("The purchase-before date must be after the first allowed date."); return; }
+    const quote = allIn(product);
+    if (totalCapMinor === null || totalCapMinor < 1) { setError("Enter an amount like 40.00."); return; }
+    if (quote !== null && totalCapMinor < quote) { setError(`The limit must cover the full price of ${money(quote)}.`); return; }
+    if (!goalId || !selectedSku) { setError("Pick a reward and set your goal first."); return; }
+    const expectedSeller = textField(product, "seller");
+    const variant = textField(product, "variant");
+    if (!expectedSeller || !variant) { setError("Couldn’t read this reward’s details. Reload and try again."); return; }
     await runAction("permission", "/api/permissions", {
-      goalId, primarySku: selectedSku, alternativeSkus, totalCapMinor, earliestDate, latestDate,
-    }, "Permission saved. You can now submit proof for review.");
+      goalId, primarySku: selectedSku, alternativeSkus: [], totalCapMinor,
+      earliestDate: startDate, latestDate: endDate, ownerConfirmed: true,
+      expectedSeller, expectedVariants: { [selectedSku]: variant },
+      expectedMode: plannedSandbox ? "paypal_sandbox_fresh" : "fixture",
+      expectedReviewerProvider: plannedReviewer, expectedReviewerModel: plannedModel,
+    });
   }
 
   async function revokeCurrentPermission() {
     const permissionId = textField(permission, "id");
     if (!permissionId || !activePermission) return;
-    await runAction("revoke", "/api/permissions/revoke", { permissionId },
-      "Permission revoked. New purchases are blocked. A Sandbox request already in flight may still settle; check the receipt status.");
+    await runAction("revoke", "/api/permissions/revoke", { permissionId });
   }
 
   async function submitEvidence(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!goalId || !notes.trim()) { setError("Write your notes and save a goal first."); return; }
-    const saved = await runAction("evidence", "/api/evidence", { goalId, notes: notes.trim() }, "Proof submitted. Refresh to follow its review and purchase status.");
+    if (notes.trim().length < 20) { setError("Write a bit more: at least 20 characters."); return; }
+    const saved = await runAction("evidence", "/api/evidence", { goalId, notes: notes.trim() });
     if (saved) setNotes("");
   }
 
   function chooseProduct(sku: string, priceMinor: number | null) {
     setSelectedSku(sku);
-    setAlternativeSkus((current) => current.filter((item) => item !== sku));
-    if (priceMinor !== null) setCapDollars(((priceMinor + 1000) / 100).toFixed(2));
+    setError("");
+    if (priceMinor !== null) setCapDollars((Math.ceil((priceMinor + 1000) / 500) * 5).toFixed(2));
   }
 
-  function toggleAlternative(sku: string) {
-    setAlternativeSkus((current) => current.includes(sku) ? current.filter((item) => item !== sku) : current.length < 3 ? [...current, sku] : current);
-  }
+  const firstName = session?.user?.name?.split(" ")[0] ?? "";
+  const quote = allIn(product);
 
   return (
-    <div className="site-shell">
-      <header className="site-header">
-        <a href="#top" className="brand" aria-label="RewardLoop home"><span className="brand-mark">r<span>•</span></span><span>RewardLoop</span></a>
-        <div className="header-actions">
-          <span className="sandbox-pill"><span className="pill-dot" /> PayPal Sandbox demo</span>
-          {userId && <button type="button" className="text-button" onClick={async () => { await authClient.signOut(); setState(null); setMessage(""); }}>Sign out</button>}
+    <div className="shell">
+      <header className="topbar">
+        <a href="/" className="brand" aria-label="RewardLoop home"><span className="brand-mark" aria-hidden="true">✓</span>RewardLoop</a>
+        <div className="topbar-right">
+          <span className="test-chip">PayPal Sandbox test mode</span>
+          {userId && <button type="button" className="link-btn" onClick={async () => { await authClient.signOut(); setState(null); }}>Sign out</button>}
         </div>
       </header>
 
-      <main id="top">
-        <section className="hero">
-          <div className="hero-copy">
-            <span className="eyebrow"><span className="eyebrow-line" /> A better reason to keep going</span>
-            <h1>Make the reward<br /><em>worth earning.</em></h1>
-            <p>Choose something you want. Set a goal you can show progress on. When your proof meets the rule, RewardLoop checks the purchase you approved.</p>
-            <div className="hero-tags"><span>Choose</span><span className="tag-arrow">→</span><span>Show up</span><span className="tag-arrow">→</span><span>Earn it</span></div>
-          </div>
-          <div className="hero-art" aria-hidden="true">
-            <div className="art-orbit orbit-one" /><div className="art-orbit orbit-two" />
-            <div className="reward-note"><span className="note-small">YOUR NEXT REWARD</span><strong>Something<br />to look forward to.</strong><span className="note-underline" /></div>
-            <div className="art-stamp">A little progress<br />adds up.</div>
-          </div>
-        </section>
-
-        <div className="safety-banner" role="note">
-          <span className="safety-icon" aria-hidden="true">✓</span>
-          <p><strong>A simulated purchase, with real guardrails.</strong> No real charge, retailer order, or shipment occurs. A completed integration run uses PayPal Sandbox only.</p>
-        </div>
-
+      <main>
         {sessionPending ? (
-          <div className="loading-panel" role="status">Checking your demo session…</div>
+          <div className="loading" role="status">Loading…</div>
         ) : !userId ? (
           <AuthPanel onAuthenticated={async () => { await refetchSession(); }} />
+        ) : !state ? (
+          <div className="loading" role="status">Loading your reward…</div>
         ) : (
-          <>
-            <section className="workspace-heading">
-              <div><span className="section-index">YOUR SPACE</span><h2>Welcome{session?.user?.name ? `, ${session.user.name.split(" ")[0]}` : ""}.</h2><p>Build one thoughtful reward, then follow each step.</p></div>
-              <button type="button" className="button button-secondary" disabled={loadingState || busy !== null} onClick={() => void refreshState()}>{loadingState ? "Refreshing…" : "Refresh status"}</button>
-            </section>
+          <div className="workspace">
+            <aside className="workspace-card">
+              <p className="hello">{firstName ? `Hi ${firstName}.` : "Hi."}</p>
+              <StampCard product={product} done={Math.min(acceptedDays, targetDays)} total={goal ? targetDays : requiredDays}
+                cap={numberField(permission, "totalCapMinor")} until={textField(permission, "latestDate")} state={step} punched={punched} />
+              {goal && <p className="card-goal"><span>Goal</span>{textField(goal, "title")}</p>}
+              {activePermission && step !== "done" && (
+                <button type="button" className="link-btn link-btn--quiet" disabled={busy !== null} onClick={() => void revokeCurrentPermission()}>
+                  {busy === "revoke" ? "Cancelling…" : "Cancel this purchase"}
+                </button>
+              )}
+            </aside>
 
-            {(error || message) && <div className={error ? "feedback feedback-error" : "feedback feedback-success"} role={error ? "alert" : "status"}>{error || message}</div>}
+            <section className="flow" aria-live="polite">
+              <ol className="rail" aria-label="Progress">
+                {RAIL.map((item, index) => (
+                  <li key={item.key} className={index < stepIndex ? "is-done" : index === stepIndex ? "is-current" : ""} aria-current={index === stepIndex ? "step" : undefined}>
+                    <span className="rail-dot" aria-hidden="true">{index < stepIndex ? "✓" : index + 1}</span>{item.label}
+                  </li>
+                ))}
+              </ol>
 
-            <section className="steps" aria-label="Your progress">
-              {[
-                ["01", "Choose a reward", Boolean(primarySku)],
-                ["02", "Set a goal", Boolean(goal)],
-                ["03", "Approve a cap", activePermission],
-                ["04", "Show progress", Boolean(purchaseStatus) || acceptedDays > 0],
-              ].map(([number, label, done]) => (
-                <div className={`step ${done ? "step-done" : ""}`} key={String(number)}><span className="step-number">{String(number)}</span><span>{String(label)}</span><span className="step-state" aria-label={done ? "Done" : "Not yet"}>{done ? "✓" : "○"}</span></div>
-              ))}
-            </section>
+              {error && <p className="banner-error" role="alert">{error}</p>}
 
-            <div className="workspace-grid" aria-busy={loadingState}>
-              <div className="workspace-main">
-                <CatalogDiscovery available={catalogProvider === "channel3"} />
-                <section className="card section-card" aria-labelledby="reward-title">
-                  <div className="card-heading"><div><span className="section-index">STEP 01 · REWARD</span><h2 id="reward-title">Pick something to earn</h2></div><span className="fixture-chip">Controlled demo catalog</span></div>
-                  <p className="muted">These are app-owned demo items. No retailer receives an order. Catalog prices are indicative; the controlled store checks the final total.</p>
-                  {products.length === 0 ? (
-                    <div className="empty-state">No demo rewards are available yet. Check the local setup and refresh.</div>
-                  ) : (
-                    <div className="product-grid">
-                      {products.map((product, index) => {
-                        const sku = productSku(product);
-                        const selected = primarySku === sku;
-                        const price = productPrice(product);
-                        const available = product.available !== false;
+              {step === "reward" && (
+                <div className="step">
+                  <h2>What do you want to earn?</h2>
+                  <p className="step-lede">Pick one. You’ll unlock it by reaching your goal.</p>
+                  <div className="products">
+                    {products.filter((item) => item.available !== false).map((item) => {
+                      const sku = productSku(item);
+                      return (
+                        <button type="button" key={sku} className="product" onClick={() => chooseProduct(sku, productPrice(item))}>
+                          <span className="product-art" aria-hidden="true">{PRODUCT_ART[sku] ?? "🎁"}</span>
+                          <strong>{productTitle(item)}</strong>
+                          <span className="product-variant">{textField(item, "variant")}</span>
+                          <span className="product-price">{money(productPrice(item))}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {step === "goal" && (
+                <form className="step form" onSubmit={submitGoal}>
+                  <h2>Set your goal</h2>
+                  <p className="step-lede">Say what you’ll do and what counts as proof. An AI checks each day’s notes against it.</p>
+                  <label>Goal<input value={goalTitle} onChange={(event) => setGoalTitle(event.target.value)} required maxLength={120} /></label>
+                  <label>What counts as proof<textarea value={rubric} onChange={(event) => setRubric(event.target.value)} required rows={3} maxLength={1000} /></label>
+                  <div className="field-row">
+                    <label className="days">Days to earn it
+                      <span className="stepper">
+                        <button type="button" aria-label="Fewer days" onClick={() => setRequiredDays((value) => Math.max(1, value - 1))}>−</button>
+                        <input type="number" min={1} max={30} value={requiredDays} onChange={(event) => setRequiredDays(Math.max(1, Math.min(30, Number(event.target.value) || 1)))} />
+                        <button type="button" aria-label="More days" onClick={() => setRequiredDays((value) => Math.min(30, value + 1))}>+</button>
+                      </span>
+                    </label>
+                    <p className="field-note">From {shortDate(startDate)} to {shortDate(addDays(endDate, -1))}. <button type="button" className="link-btn" onClick={() => setShowDates((value) => !value)}>{showDates ? "Done" : "Change dates"}</button></p>
+                  </div>
+                  {showDates && (
+                    <div className="field-row">
+                      <label>Starts<input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} required /></label>
+                      <label>Ends before<input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} required /></label>
+                    </div>
+                  )}
+                  <div className="actions">
+                    <button type="button" className="btn btn-ghost" onClick={() => setSelectedSku("")}>Back</button>
+                    <button type="submit" className="btn btn-primary" disabled={busy !== null}>{busy === "goal" ? "Saving…" : "Save goal"}</button>
+                  </div>
+                </form>
+              )}
+
+              {step === "limit" && (
+                <form className="step form" onSubmit={submitPermission}>
+                  <h2>Set your spending limit</h2>
+                  <p className="step-lede">RewardLoop can only buy this one item, once, for no more than this.</p>
+                  <div className="limit">
+                    <span className="limit-label">Most you’ll pay</span>
+                    <span className="limit-input"><span>$</span><input inputMode="decimal" value={capDollars} onChange={(event) => setCapDollars(event.target.value)} required aria-label="Most you’ll pay, in US dollars" /></span>
+                    <span className="limit-note">{product ? `${productTitle(product)} costs ${money(quote)} with tax and shipping.` : ""}</span>
+                  </div>
+                  <label className="check">
+                    <input type="checkbox" checked={permissionConsent} onChange={(event) => setPermissionConsent(event.target.checked)} required />
+                    <span>Buy {product ? productTitle(product).toLowerCase() : "this item"} for me once I’ve earned it, up to ${capDollars || "0"}, before {shortDate(endDate)}. {plannedSandbox ? "I’ll approve the payment on PayPal." : ""}</span>
+                  </label>
+                  {!reviewerReady && <p className="error">The AI reviewer isn’t set up on this computer yet.</p>}
+                  <div className="actions">
+                    <button type="submit" className="btn btn-primary" disabled={!permissionConsent || !reviewerReady || busy !== null}>{busy === "permission" ? "Saving…" : "Approve limit"}</button>
+                  </div>
+                </form>
+              )}
+
+              {step === "cart" && (
+                <div className="step">
+                  <h2>Put it in your cart</h2>
+                  <p className="step-lede">It waits there, locked, until you’ve earned it.</p>
+                  <MockStoreSetup sku={primarySku} onLinked={() => void refreshState()} />
+                </div>
+              )}
+
+              {step === "proof" && (
+                <form className="step form" onSubmit={submitEvidence}>
+                  <h2>Show today’s progress</h2>
+                  <blockquote className="rule">{textField(goal, "rubric")}</blockquote>
+                  <label>Today’s notes
+                    <textarea value={notes} onChange={(event) => setNotes(event.target.value)} rows={6} minLength={20} maxLength={5000} required placeholder="What did you learn today?" />
+                  </label>
+                  <div className="actions actions--split">
+                    <span className="reviewer">Checked by {reviewer}</span>
+                    <button type="submit" className="btn btn-primary" disabled={busy !== null || pendingReview}>{busy === "evidence" ? "Sending…" : pendingReview ? "Checking…" : "Send for review"}</button>
+                  </div>
+                  {evidence.length > 0 && (
+                    <ul className="reviews">
+                      {evidence.slice(0, 3).map((item, index) => {
+                        const status = textField(item, "status").toUpperCase();
+                        const missing = missingOf(item);
                         return (
-                          <button type="button" key={sku || index} className={`product-card ${selected ? "selected" : ""}`} aria-pressed={selected} disabled={!sku || !available || Boolean(permission)} onClick={() => chooseProduct(sku, price)}>
-                            <span className={`product-visual visual-${index % 4}`} aria-hidden="true"><span>{String(index + 1).padStart(2, "0")}</span><span className="visual-shape" /></span>
-                            <span className="product-copy"><strong>{productTitle(product)}</strong><small>{textField(product, "description") || (available ? "Demo reward" : "Unavailable")}</small><span className="product-price">{money(price)} <span>{selected ? "Selected" : available ? "Choose reward" : "Unavailable"}</span></span></span>
-                          </button>
+                          <li key={textField(item, "id") || index} className={`review review--${status.toLowerCase()}`}>
+                            <span className="review-chip">{status === "ACCEPTED" ? "Stamped" : status === "PENDING" ? "Checking…" : "Not yet"}</span>
+                            <span className="review-text">
+                              {status === "PENDING" ? "The AI is reading your notes." : status === "ACCEPTED" ? "Your notes cover everything in the rule." : missing.length ? `Missing: ${missing.join("; ").replace(/\.$/, "")}.` : "This didn’t meet the rule yet. Add more detail."}
+                            </span>
+                          </li>
                         );
                       })}
-                    </div>
+                    </ul>
                   )}
-                </section>
+                </form>
+              )}
 
-                <section className="card section-card" aria-labelledby="goal-title">
-                  <div className="card-heading"><div><span className="section-index">STEP 02 · GOAL</span><h2 id="goal-title">Make it measurable</h2></div>{goal && <span className="complete-chip">Saved</span>}</div>
-                  {goal ? (
-                    <div className="saved-summary"><h3>{textField(goal, "title") || "Your goal"}</h3><p>{textField(goal, "rubric") || "Your evidence rule is saved."}</p><div className="summary-facts"><span>{acceptedDays} of {targetDays} qualifying days</span><span>{textField(goal, "timezone") || timeZone}</span><span className={statusClass(textField(goal, "status", "state"))}>{textField(goal, "status", "state") || "Active"}</span></div><div className="progress-track" role="progressbar" aria-valuenow={acceptedDays} aria-valuemin={0} aria-valuemax={targetDays} aria-label="Qualifying days"><span style={{ width: `${progress}%` }} /></div></div>
-                  ) : (
-                    <form onSubmit={submitGoal} className="stack-form">
-                      <label>Goal title<input value={goalTitle} onChange={(event) => setGoalTitle(event.target.value)} required maxLength={120} /></label>
-                      <label>What counts as proof?<textarea value={rubric} onChange={(event) => setRubric(event.target.value)} required rows={3} maxLength={1000} /><small>Describe something observable. Notes can show understanding; they cannot prove an unseen duration.</small></label>
-                      <div className="form-row"><label>Qualifying days<input type="number" min="1" max="365" value={requiredDays} onChange={(event) => setRequiredDays(Number(event.target.value))} required /></label><label>Goal timezone<input list="timezones" value={timeZone} onChange={(event) => setTimeZone(event.target.value)} required /><datalist id="timezones"><option value="America/New_York" /><option value="America/Los_Angeles" /><option value="America/Chicago" /><option value="Asia/Kolkata" /><option value="UTC" /></datalist></label></div>
-                      <div className="form-row"><label>Start date<input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} required /></label><label>End date (exclusive)<input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} required /></label></div>
-                      <button type="submit" className="button button-primary" disabled={busy !== null}>{busy === "goal" ? "Saving goal…" : "Save this goal"}</button>
-                    </form>
-                  )}
-                </section>
+              {step === "pay" && (
+                <div className="step">
+                  <h2>You earned it.</h2>
+                  <p className="step-lede">{product ? `${productTitle(product)}, ${money(quote)} total.` : ""} {plannedSandbox ? "Approve the payment with PayPal to finish." : "Finishing your test purchase…"}</p>
+                  {plannedSandbox ? <FreshSandboxCheckout onChange={() => void refreshState()} /> : <p className="waiting">Processing…</p>}
+                </div>
+              )}
 
-                <section className="card section-card" aria-labelledby="permission-title">
-                  <div className="card-heading"><div><span className="section-index">STEP 03 · PERMISSION</span><h2 id="permission-title">Set your boundaries</h2></div>{permission && <span className="complete-chip">{activePermission ? "Approved" : "Revoked"}</span>}</div>
-                  {permission ? (
-                    <div className="saved-summary">
-                      <p><strong>{textField(permission, "primarySku") || "Selected demo reward"}</strong> {activePermission ? "is approved within the saved purchase rules." : "was covered by a permission that is now revoked."}</p>
-                      <div className="summary-facts"><span>Maximum {money(numberField(permission, "totalCapMinor"))}</span><span>{textField(permission, "earliestDate")} to before {textField(permission, "latestDate")}</span><span className={statusClass(permissionStatus)}>{permissionStatus || "Active"}</span></div>
-                      <p className="muted">{activePermission ? "Saving a PayPal wallet and approving a purchase are separate actions. This demo never enables live payments." : "New purchase attempts are blocked. An already started Sandbox payment may still settle; check the receipt status. This goal cycle cannot be approved again."}</p>
-                      {activePermission && <button type="button" className="button button-secondary" disabled={busy !== null} onClick={() => void revokeCurrentPermission()}>{busy === "revoke" ? "Revoking…" : "Revoke purchase permission"}</button>}
-                    </div>
-                  ) : (
-                    <form onSubmit={submitPermission} className="stack-form">
-                      <p className="muted">The server will refuse any item, total, or date outside these choices. Select an exact primary reward above.</p>
-                      <div className="permission-selection"><span>Primary reward</span><strong>{selectedProduct ? productTitle(selectedProduct) : "Choose a reward first"}</strong></div>
-                      <fieldset className="alternatives"><legend>Allowed alternatives <span>(optional, up to 3)</span></legend>{products.filter((product) => productSku(product) !== selectedSku && productSku(product) && product.available !== false).map((product) => <label key={productSku(product)}><input type="checkbox" checked={alternativeSkus.includes(productSku(product))} disabled={!selectedSku || (alternativeSkus.length >= 3 && !alternativeSkus.includes(productSku(product)))} onChange={() => toggleAlternative(productSku(product))} /><span>{productTitle(product)} <small>{money(productPrice(product))}</small></span></label>)}</fieldset>
-                      <div className="form-row"><label>All-in maximum (USD)<div className="input-prefix"><span>$</span><input inputMode="decimal" value={capDollars} onChange={(event) => setCapDollars(event.target.value)} required aria-label="All-in maximum in US dollars" /></div><small>Includes demo tax and shipping.</small></label><div className="form-help"><strong>One purchase only</strong><span>Permission is tied to this goal. Changing the rules requires approval again.</span></div></div>
-                      <div className="form-row"><label>Earliest purchase date<input type="date" value={earliestDate} onChange={(event) => setEarliestDate(event.target.value)} required /></label><label>Purchase before<input type="date" value={latestDate} onChange={(event) => setLatestDate(event.target.value)} required /><small>This is the first date on which a purchase is not allowed.</small></label></div>
-                      <button type="submit" className="button button-primary" disabled={!goalId || !selectedSku || busy !== null}>{busy === "permission" ? "Saving permission…" : "Approve these limits"}</button>
-                    </form>
-                  )}
-                </section>
+              {step === "done" && (
+                <div className="step step--done">
+                  <h2>It’s yours.</h2>
+                  <p className="step-lede">{product ? productTitle(product) : "Your reward"} was paid for {receiptProvider.includes("paypal") ? "with PayPal" : "in test mode"}.</p>
+                  <dl className="receipt">
+                    <div><dt>Paid</dt><dd>{money(numberField(purchase, "totalMinor") ?? quote)}</dd></div>
+                    {receiptProvider.includes("paypal") ? (
+                      <>
+                        <div><dt>PayPal order</dt><dd>{textField(purchase, "orderId")}</dd></div>
+                        <div><dt>PayPal capture</dt><dd>{textField(purchase, "captureId")}</dd></div>
+                      </>
+                    ) : <div><dt>Payment</dt><dd>Offline test, no PayPal call</dd></div>}
+                    <div><dt>Proof checked by</dt><dd>{reviewer}</dd></div>
+                  </dl>
+                  <p className="fine">Sandbox test money only. Nothing is charged or shipped.</p>
+                </div>
+              )}
 
-                <SandboxWallet />
-
-                <FreshSandboxCheckout />
-
-                <MockStoreSetup />
-
-                <section className="card section-card" aria-labelledby="evidence-title">
-                  <div className="card-heading"><div><span className="section-index">STEP 04 · PROGRESS</span><h2 id="evidence-title">Show what you did</h2></div></div>
-                  <p className="muted">The reviewer checks your notes against the rule. Trusted code counts distinct qualifying days; one submission cannot create several days.</p>
-                  <form onSubmit={submitEvidence} className="stack-form"><label>Today’s notes<textarea value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="What did you study or practice? Share three specific takeaways…" rows={5} minLength={10} maxLength={5000} required /></label><button type="submit" className="button button-primary" disabled={!goalId || !activePermission || busy !== null}>{busy === "evidence" ? "Submitting…" : "Submit proof for review"}</button></form>
-                  {evidence.length > 0 && <div className="review-history"><h3>Recent submissions</h3><ul>{evidence.slice(0, 4).map((item, index) => { const status = textField(item, "status", "decision") || "Pending"; return <li key={textField(item, "id") || index}><span className={`mini-status ${statusClass(status)}`}>{status}</span><span>{evidenceReason(item)}</span></li>; })}</ul></div>}
-                </section>
-              </div>
-
-              <aside className="workspace-aside" aria-label="Demo status">
-                <section className="card status-card"><span className="section-index">YOUR REWARD</span><div className="status-illustration" aria-hidden="true"><span className="status-illustration-ring" /><span>✦</span></div><h2>{selectedProduct ? productTitle(selectedProduct) : "Your reward goes here"}</h2><p>{selectedProduct ? "A demo-store item linked to your choice." : "Choose one of the demo rewards to get started."}</p><div className="status-divider" /><dl><div><dt>Goal progress</dt><dd>{goal ? `${acceptedDays} / ${targetDays} days` : "Not started"}</dd></div><div><dt>Approved cap</dt><dd>{permission ? money(numberField(permission, "totalCapMinor")) : "Not approved"}</dd></div><div><dt>Purchase</dt><dd>{displayedPurchaseStatus || "Not started"}</dd></div></dl></section>
-                <section className="card provenance-card"><span className="section-index">INTEGRATION SETTINGS</span><h2>Provider access</h2><p>These settings show which services are configured. Search results, reviews, and receipts identify which provider actually handled each step.</p><dl>{provenanceEntries(state?.providerMode || null).map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl></section>
-                <section className="card receipt-card"><span className="section-index">PURCHASE & RECEIPT</span>{fixtureComplete && <div className="fixture-receipt-label">Fixture only · No PayPal payment</div>}<h2>{displayedPurchaseStatus || "Waiting on progress"}</h2><p>{fixtureComplete ? "The controlled demo store completed a local simulation. No PayPal Sandbox order or capture was created." : purchase ? textField(purchase, "reason", "message") || "The purchase state is shown here after the backend checks it." : "When your goal qualifies, the server checks the saved limits before any Sandbox payment."}</p>{purchase && <dl><div><dt>Store browser</dt><dd>{textField(purchase, "browserProvider") || "Not prepared"}</dd></div><div><dt>Synthetic store order</dt><dd>{textField(purchase, "storeOrderId", "mockStoreOrderId") || "—"}</dd></div><div><dt>PayPal Sandbox order</dt><dd>{hasSandboxPayment ? textField(purchase, "paypalOrderId", "orderId") || "—" : "Not run"}</dd></div><div><dt>Sandbox capture</dt><dd>{hasSandboxPayment ? textField(purchase, "paypalCaptureId", "captureId") || "—" : "Not run"}</dd></div></dl>}<div className="receipt-disclaimer">No real charge · No retailer order · No shipment</div></section>
-              </aside>
-            </div>
-          </>
+              {step === "revoked" && (
+                <div className="step">
+                  <h2>Purchase cancelled</h2>
+                  <p className="step-lede">RewardLoop won’t buy anything for this goal.</p>
+                </div>
+              )}
+            </section>
+          </div>
         )}
       </main>
-      <footer className="site-footer"><span>RewardLoop · PayPal AI Hackathon</span><span>Built for a safer, more intentional reward demo.</span></footer>
     </div>
   );
 }

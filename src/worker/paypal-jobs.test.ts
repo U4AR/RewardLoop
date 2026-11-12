@@ -31,12 +31,13 @@ function validContext() {
     intent_state: "COMMITTING", intent_reason: null, capture_id: null, intent_order_id: null,
     quote_id: "quote-1", selected_sku: "SKU-1", store_session_id: "store-session-1", lease_owner: "worker", lease_fence: 7,
     lease_until: new Date(Date.now() + 60_000), permission_status: "ACTIVE", payload_hash: "hash-1",
-    goal_version: 1, rubric_version: 1, earliest_date: "2020-01-01", latest_date: "2099-01-01",
+    goal_version: 1, rubric_version: 1, review_provider: "local_llama", review_model: "Qwen3-1.7B-Q4_K_M",
+    earliest_date: "2020-01-01", latest_date: "2099-01-01",
     unattended_sandbox_approved: true, execution_mode: "paypal_sandbox",
     payment_connection_id: "connection-1", primary_sku: "SKU-1", alternative_skus: [],
     approved_variants: { "SKU-1": "blue" }, approved_seller: "demo-seller", approved_quantity: 1,
     approved_currency: "USD", synthetic_destination_id: "demo-address", total_cap_minor: 2000,
-    goal_status: "ACTIVE", current_goal_version: 1, current_rubric_version: 1,
+    goal_id: "goal-1", goal_status: "ACTIVE", current_goal_version: 1, current_rubric_version: 1,
     timezone: "UTC", required_days: 1, start_date: "2020-01-01", end_date_exclusive: "2099-01-01",
     quote_status: "RESERVED", expires_at: new Date(Date.now() + 60_000), total_minor: 1234,
     currency: "USD", sku: "SKU-1", variant: "blue", seller: "demo-seller", quantity: 1,
@@ -78,7 +79,7 @@ describe("PayPal worker financial boundary", () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
     mocks.query.mockResolvedValue({ rows: [operation] });
-    const txQuery = vi.fn(async (sql: string) => {
+    const txQuery = vi.fn(async (sql: string, _params?: unknown[]) => {
       if (sql.includes("FROM payment_connections")) return { rows: [{ status: "ACTIVE", environment: "sandbox", merchant_id: "merchant-1" }] };
       if (sql.includes("SELECT i.state AS intent_state")) return { rows: [validContext()] };
       if (sql.includes("COUNT(*)::int")) return { rows: [{ n: 1 }] };
@@ -98,7 +99,7 @@ describe("PayPal worker financial boundary", () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
     mocks.query.mockResolvedValue({ rows: [operation] });
-    const txQuery = vi.fn(async (sql: string) => {
+    const txQuery = vi.fn(async (sql: string, _params?: unknown[]) => {
       if (sql.includes("FROM payment_connections")) return { rows: [{ status: "ACTIVE", environment: "sandbox", merchant_id: "merchant-1" }] };
       if (sql.includes("SELECT i.state AS intent_state")) {
         return { rows: [{ ...validContext(), permission_status: "REVOKED" }] };
@@ -120,7 +121,7 @@ describe("PayPal worker financial boundary", () => {
       : new Response(JSON.stringify({ name: "UNPROCESSABLE_ENTITY" }), { status: 422 }));
     vi.stubGlobal("fetch", fetchMock);
     mocks.query.mockResolvedValue({ rows: [operation] });
-    const txQuery = vi.fn(async (sql: string) => {
+    const txQuery = vi.fn(async (sql: string, _params?: unknown[]) => {
       if (sql.includes("FROM payment_connections")) return { rows: [{ status: "ACTIVE", environment: "sandbox", merchant_id: "merchant-1" }] };
       if (sql.includes("SELECT i.state AS intent_state")) return { rows: [validContext()] };
       if (sql.includes("COUNT(*)::int")) return { rows: [{ n: 1 }] };
@@ -131,6 +132,8 @@ describe("PayPal worker financial boundary", () => {
     await commitPayPal(operation.id, operation.user_id);
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
+    const qualification = txQuery.mock.calls.find(([sql]) => String(sql).includes("FROM daily_qualifications"));
+    expect(qualification?.[1]).toEqual(["goal-1", 1, 1, "2020-01-01", "2099-01-01", "user-1", "local_llama", "Qwen3-1.7B-Q4_K_M"]);
     expect(txQuery.mock.calls.some(([sql]) => String(sql).includes("state = 'SENT'"))).toBe(true);
     expect(txQuery.mock.calls.some(([sql]) => String(sql).includes("state = 'OUTCOME_UNKNOWN'"))).toBe(true);
     expect(txQuery.mock.calls.some(([sql]) => String(sql).includes("reconcile_paypal"))).toBe(true);

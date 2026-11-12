@@ -1,0 +1,13 @@
+node_modules
+.next*
+.git
+.env
+.env.*
+!.env.example
+.local-*
+video
+work
+coverage
+*.log
+*.tsbuildinfo
+provider-evidence

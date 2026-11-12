@@ -1,6 +1,6 @@
 # Architecture decisions
 
-Decisions recorded on 7 October 2026 from the supplied implementation brief and current official documentation. They are **design decisions**, not reports of a completed provider setup or successful transaction. [BUILD_STATUS.md](BUILD_STATUS.md) tracks implementation and [SETUP_STATUS.md](SETUP_STATUS.md) tracks observed access.
+The initial decisions were recorded on 7 October 2026 from the supplied implementation brief and official documentation. D-13 records the fallback selected after the observed 24 October Sandbox browser run. [BUILD_STATUS.md](BUILD_STATUS.md) tracks implementation and [SETUP_STATUS.md](SETUP_STATUS.md) tracks observed access.
 
 | ID | Decision and reason | Implementation consequence |
 | --- | --- | --- |
@@ -16,14 +16,15 @@ Decisions recorded on 7 October 2026 from the supplied implementation brief and 
 | D-10 | Use transactional outbox delivery and an explicit due-window sweep. A database commit followed by a best-effort enqueue can lose a purchase job. | Business state and outbox event commit together; dispatcher/worker are restart-safe. The sweep covers real elapsed time and operator-authorized demo-clock advances. |
 | D-11 | Keep model decisions advisory. Submitted proof, catalog text, and store pages are untrusted input. | AI emits schema-validated evidence observations or fixed shopping-tool choices; trusted code counts days and enforces permission, quote, and payment scope. |
 | D-12 | State every provider's provenance in demo evidence. A fixture is useful for development but cannot prove hackathon integration. | Mark catalog, evidence, browser, and payment as fixture or provider-backed per run; report genuine Sandbox IDs only after an authoritative PayPal response or verified event. |
+| D-13 | Use a fresh Sandbox approval redirect when the browser SDK popup does not render. Keep the order and frozen quote bound to the same intent through return and capture. | Validate the Sandbox approval URL, order token, user session, merchant, reference, and amount; require an explicit capture action on return. The 24 October US test-buyer run completed and was independently checked through Sandbox GET order/capture and Render database state. A prior order whose quote/lease expired was never captured or reused. |
 
-## Open verification gates
+## Remaining verification gates
 
-These are checks to perform, not assumed results:
+Sandbox OAuth, Channel3 live search/detail, and one fresh buyer-approved PayPal Sandbox capture have been observed. The following remain:
 
-1. Confirm actual PayPal developer/Sandbox account access and whether the test merchant can complete Vault setup and payer-absent use. PayPal's [saved-wallet guide](https://developer.paypal.com/api/payment-tokens/save-without-purchase/paypal) documents the intended flow; an OAuth token or visible Vault toggle alone does not verify it.
+1. Determine whether the selected Sandbox merchant can complete Vault setup and payer-absent use. PayPal's [saved-wallet guide](https://developer.paypal.com/api/payment-tokens/save-without-purchase/paypal) documents the intended flow; a successful fresh approval/capture does not verify unattended Vault use.
 2. Verify the exact [Orders API](https://developer.paypal.com/api/orders/v2/orders-create/) response for a saved-token transaction, including any completed capture in the create-order response. Do not always call capture afterward.
-3. Verify Channel3's current schema and caching terms using an actual bounded response before claiming real catalog search works.
+3. Verify Channel3 caching terms before persisting catalog data; bounded live search and product detail already succeeded. One sampled offer-URL lookup returned `unsupported`.
 4. Verify Kernel profile lifecycle with two distinct sessions against a reachable mock-store host. The [profile documentation](https://www.kernel.sh/docs/browsers/profiles/save-and-reuse) is a contract reference, not evidence of persistence in this project.
 5. Verify hosting cost and judge access before creating paid cloud resources. A local app is not a deployed judge build.
 
