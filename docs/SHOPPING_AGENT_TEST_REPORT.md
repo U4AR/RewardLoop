@@ -1,5 +1,7 @@
 # RewardLoop shopping agent: test report
 
+> **12 November release:** See [the current release record](RELEASE_2026-11-12.md) and [private Render deployment](PRIVATE_DEPLOYMENT.md). The final v2 demo is https://youtu.be/HjQBsC4a5kI. The current flow uses hosted AI, restricted delivery autofill, and verified PayPal Sandbox payment; no retailer order is placed. Earlier prototype/testing notes below are historical where they differ.
+
 **Date:** 11–12 November 2026 (IST) · **Build:** local source on the owner's PC, `npm run dev:workspace` at http://localhost:3001 · **Providers:** Channel3 (live), Kernel (live), Vertex AI `gemini-3.8-flash` in project `gen-lang-client-0907473631` via the local gcloud account in `.env.local` · **Mode:** dry run only. No real card was charged and no real order was placed.
 
 ## Result summary

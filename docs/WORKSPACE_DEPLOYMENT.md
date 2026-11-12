@@ -1,5 +1,7 @@
 # RewardLoop reward workspace
 
+> **12 November release:** See [the current release record](RELEASE_2026-11-12.md) and [private Render deployment](PRIVATE_DEPLOYMENT.md). The final v2 demo is https://youtu.be/HjQBsC4a5kI. The current flow uses hosted AI, restricted delivery autofill, and verified PayPal Sandbox payment; no retailer order is placed. Earlier prototype/testing notes below are historical where they differ.
+
 The main app at `/` now uses real Channel3 products, hosted Gemini evidence review, short-lived Kernel retailer checks, and an optional Kernel shopping agent that runs only under an explicit, bounded purchase approval (dry run by default). No local Qwen process, synthetic shop, seed products, or background worker is required for this flow. The former synthetic PayPal demonstration remains separate at `/sandbox`; it is never evidence of a real retailer purchase.
 
 ## Run the configured local version

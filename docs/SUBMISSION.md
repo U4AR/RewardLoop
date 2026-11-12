@@ -1,5 +1,7 @@
 # Devpost submission draft and release status
 
+> **12 November release:** See [the current release record](RELEASE_2026-11-12.md) and [private Render deployment](PRIVATE_DEPLOYMENT.md). The final v2 demo is https://youtu.be/HjQBsC4a5kI. The current flow uses hosted AI, restricted delivery autofill, and verified PayPal Sandbox payment; no retailer order is placed. Earlier prototype/testing notes below are historical where they differ.
+
 Updated 24 October 2026. A [temporary public repository](https://github.com/U4AR/RewardLoop) and a Devpost draft exist. A 99-second fixture prototype is playable but **unlisted** while its replacement is prepared; its link and source assets are held out of this public repository. Devpost shows **4/5 steps saved**, with no final submission receipt. Its private management URL is held outside this public repository. A real Qwen decision on a Render-backed synthetic account qualified one day, linked an exact Notebook set cart, and led to a **verified $22.68 PayPal Sandbox capture** under a $25.00 permission cap. Participant eligibility answers were provided by the owner; final rules and terms acceptance requires action-time owner confirmation. Update the entry with the captured run and replacement video before finalizing.
 
 ## Official submission rules and deadline

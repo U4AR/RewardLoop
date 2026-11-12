@@ -1,5 +1,7 @@
 # Devpost copy for the verified Sandbox capture
 
+> **12 November release:** See [the current release record](RELEASE_2026-11-12.md) and [private Render deployment](PRIVATE_DEPLOYMENT.md). The final v2 demo is https://youtu.be/HjQBsC4a5kI. The current flow uses hosted AI, restricted delivery autofill, and verified PayPal Sandbox payment; no retailer order is placed. Earlier prototype/testing notes below are historical where they differ.
+
 This is an editing worksheet for the **verified 24 October Sandbox capture**, not a claim that the Devpost entry is finalized. The Render-backed signed-in run verified a pinned Qwen verdict, `1 of 1` qualifying day, exact synthetic Notebook set cart binding, US Sandbox buyer approval, and a $22.68 completed Sandbox capture under a $25.00 cap. The first PayPal SDK popup was blank; the successful run used a server-created Sandbox approval redirect. PayPal REST GET order and capture responses and Render database records were cross-checked. Keep the final entry focused on this working slice and do not paste private credentials.
 
 ## Evidence to record before changing the entry
